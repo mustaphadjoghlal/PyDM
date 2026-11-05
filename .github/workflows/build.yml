@@ -1,0 +1,44 @@
+name: Build PyDM
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install PyInstaller
+        run: pip install pyinstaller
+
+      - name: Build PyDM.exe
+        run: pyinstaller --onefile --windowed --name PyDM pydm.py
+
+      - name: Zip the browser extension
+        run: Compress-Archive -Path extension\* -DestinationPath dist\PyDM-extension.zip
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: PyDM
+          path: |
+            dist/PyDM.exe
+            dist/PyDM-extension.zip
+
+      - name: Publish release (on tags)
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/PyDM.exe
+            dist/PyDM-extension.zip
