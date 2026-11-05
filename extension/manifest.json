@@ -1,0 +1,10 @@
+{
+  "manifest_version": 3,
+  "name": "PyDM Catcher",
+  "version": "1.0",
+  "description": "يلتقط التحميلات ويمررها إلى برنامج PyDM",
+  "permissions": ["downloads", "contextMenus", "storage", "cookies"],
+  "host_permissions": ["<all_urls>"],
+  "background": { "service_worker": "background.js" },
+  "action": { "default_popup": "popup.html", "default_title": "PyDM" }
+}

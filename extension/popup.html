@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="utf-8">
+<style>
+  body { font-family: Segoe UI, Tahoma, sans-serif; width: 270px; margin: 0; padding: 12px; font-size: 14px; }
+  .row { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
+  #state { font-weight: bold; }
+  .ok { color: #1e8449; } .bad { color: #c0392b; }
+  input[type=text] { width: 100%; box-sizing: border-box; padding: 6px; margin-bottom: 6px; direction: ltr; }
+  button { width: 100%; padding: 7px; cursor: pointer; }
+  #msg { margin-top: 6px; font-size: 12px; min-height: 16px; }
+</style>
+</head>
+<body>
+  <div class="row"><span>حالة البرنامج:</span><span id="state">...</span></div>
+  <div class="row"><label for="en">التقاط التحميلات تلقائياً</label><input type="checkbox" id="en"></div>
+  <input type="text" id="url" placeholder="الصق رابطاً هنا">
+  <button id="send">إرسال إلى PyDM</button>
+  <div id="msg"></div>
+  <script src="popup.js"></script>
+</body>
+</html>
