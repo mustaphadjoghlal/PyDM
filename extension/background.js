@@ -31,12 +31,26 @@ async function handoff(url, referrer, meta) {
   if (meta && meta.kind) body.kind = meta.kind;
   if (meta && meta.mode) body.mode = meta.mode;
   if (meta && meta.title) body.title = meta.title;
-  const r = await fetch(API + "/add", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body)
-  });
-  return r.ok;
+  if (meta && meta.kind === "ytdlp") {
+    // فيسبوك وإنستغرام يحتاجان تسجيل الدخول: نرسل كوكيز الموقع ليكتبها PyDM في ملف لـ yt-dlp
+    try {
+      body.cookies = (await chrome.cookies.getAll({ url })).map(c => ({
+        name: c.name, value: c.value, domain: c.domain, path: c.path, secure: c.secure,
+        httpOnly: c.httpOnly, expirationDate: c.expirationDate || 0
+      }));
+    } catch (e) { /* بلا كوكيز */ }
+  }
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), 2500);   // لا نعلّق تحميل المتصفح إن لم يرد البرنامج
+  try {
+    const r = await fetch(API + "/add", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+      signal: ctl.signal
+    });
+    return r.ok;
+  } finally { clearTimeout(timer); }
 }
 
 function flagError() {
@@ -46,18 +60,44 @@ function flagError() {
 }
 
 // ---------- التقاط التحميلات تلقائياً
-chrome.downloads.onCreated.addListener(async (item) => {
-  if (!(await isEnabled())) return;
-  const url = item.url;
-  if (!/^https?:/i.test(url)) return;      // نتجاهل blob: و data:
-  try {
-    if (await handoff(url, item.referrer)) {
-      await chrome.downloads.cancel(item.id);
-      await chrome.downloads.erase({ id: item.id });
+// نلتقط التحميل قبل أن يبدأ المتصفح في كتابة الملف (onDeterminingFilename)،
+// فلا يبقى ملف مكرر في مجلد المتصفح. الصور تبقى للمتصفح افتراضياً.
+const IMAGE_EXT = /\.(jpe?g|png|gif|webp|bmp|svg|ico|avif|heic|heif|tiff?|jfif)$/i;
+
+function isImage(item) {
+  if ((item.mime || "").toLowerCase().startsWith("image/")) return true;
+  const name = (item.filename || "").split(/[\\/]/).pop();
+  let path = "";
+  try { path = new URL(item.finalUrl || item.url).pathname; } catch (e) { /* رابط غير عادي */ }
+  return IMAGE_EXT.test(name) || IMAGE_EXT.test(path);
+}
+
+async function shouldCapture(item) {
+  const { enabled = true, skipImages = true } = await chrome.storage.local.get(["enabled", "skipImages"]);
+  if (!enabled) return false;
+  const url = item.finalUrl || item.url;
+  if (!/^https?:/i.test(url)) return false;          // blob: و data: يكملها المتصفح
+  if (skipImages && isImage(item)) return false;
+  return true;
+}
+
+chrome.downloads.onDeterminingFilename.addListener((item, suggest) => {
+  (async () => {
+    let taken = false;
+    try {
+      if (await shouldCapture(item)) {
+        const name = (item.filename || "").split(/[\\/]/).pop();
+        taken = await handoff(item.finalUrl || item.url, item.referrer, { title: name });
+      }
+    } catch (e) {
+      taken = false;                                  // البرنامج غير مفتوح: يكمل المتصفح التحميل
     }
-  } catch (e) {
-    // البرنامج غير مفتوح: نترك المتصفح يكمل التحميل بنفسه
-  }
+    if (taken) {
+      try { await chrome.downloads.cancel(item.id); await chrome.downloads.erase({ id: item.id }); } catch (e) { /* انتهى */ }
+    }
+    try { suggest(); } catch (e) { /* أُلغي التحميل */ }
+  })();
+  return true;   // سنستدعي suggest بعد القرار
 });
 
 // ---------- قائمة الزر الأيمن

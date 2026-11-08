@@ -5,7 +5,7 @@
 
   const MIN_W = 240, MIN_H = 135;
   const SITES = /(^|\.)(youtube\.com|youtube-nocookie\.com|youtu\.be|facebook\.com|fb\.watch|instagram\.com|tiktok\.com|twitter\.com|x\.com|vimeo\.com|dailymotion\.com|twitch\.tv|soundcloud\.com|reddit\.com)$/i;
-  const POST_PATH = /\/(watch|shorts|embed|live|reel|reels|videos?|p|status|clip|v)\b|\/\d{6,}/i;
+  const POST_PATH = /\/(watch|shorts|embed|live|reel|reels|videos?|p|status|clip|v|share|permalink|posts|story)\b|\/\d{6,}/i;
   const ICON = `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3.5v10m0 0-4-4m4 4 4-4M5 16.5v2a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-2" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
 
   let enabled = true;

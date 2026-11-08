@@ -54,4 +54,55 @@ check("ping ui false before ready", ping()["ui"] is False)
 api.ready(); check("ping ui true after ready", ping()["ui"] is True)
 check("/show safe without window", json.loads(urllib.request.urlopen("http://127.0.0.1:9614/show").read())["ok"])
 check("clipboard safe on linux", api.clipboard() == "")
-print("\nALL OK" if ok else "\nSOME FAILED")
+# ---------- settings + notifications (fake webview records the toast windows)
+import types
+created = []
+class FakeWin:
+    def __init__(s, **k): s.k = k; s.html = k.get("html"); s.js_api = k.get("js_api"); s.destroyed = False
+    def destroy(s): s.destroyed = True
+fake = types.ModuleType("webview")
+fake.screens = [types.SimpleNamespace(width=1920, height=1080)]
+def create_window(title, url=None, html=None, js_api=None, **k):
+    w = FakeWin(title=title, html=html, js_api=js_api, **k); created.append(w); return w
+fake.create_window = create_window
+sys.modules["webview"] = fake
+ok2 = True
+def check2(n, c, e=""):
+    global ok2; print(("PASS " if c else "FAIL ") + n, e); ok2 &= bool(c)
+m3 = pydm.Manager(); m3.cfg["folder"] = os.path.join(home, "dl3"); a3 = pydm.Api(m3)
+st = a3.state()["settings"]
+check2("new settings default on", st["compat"] is True and st["notify"] is True)
+check2("set_option", a3.set_option("compat", False) and m3.cfg["compat"] is False and not a3.set_option("folder", "x"))
+m3.notifier = pydm.Notifier()
+check2("toast template loaded", "/*__DATA__*/null" in m3.notifier.template)
+d = m3.add(B + "song.mp3")
+time.sleep(1.8)
+check2("fast download: no 'started' notice", len(created) == 0, len(created))
+wait(lambda: d.status == "done"); a3.state()
+check2("done toast with file name", len(created) == 1 and '"event": "done"' in created[0].html and '"name": "song.mp3"' in created[0].html)
+w = created[-1].k
+check2("toast placed bottom-right, frameless, no focus", w["x"] == 1920 - 380 - 16 and w["y"] == 1080 - 104 - 64 and w["frameless"] and w["on_top"] and w["focus"] is False)
+check2("done toast has the file path", json.dumps(d.path)[1:-1] in created[0].html)
+from http.server import BaseHTTPRequestHandler
+class Slow(BaseHTTPRequestHandler):
+    def log_message(s, *a): pass
+    def do_GET(s):
+        s.send_response(200); s.send_header("Content-Length", "100000000"); s.end_headers()
+        try:
+            for _ in range(60): s.wfile.write(b"x" * 1000); s.wfile.flush(); time.sleep(0.1)
+        except Exception: pass
+slow_srv = ThreadingHTTPServer(("127.0.0.1", 8767), Slow); threading.Thread(target=slow_srv.serve_forever, daemon=True).start()
+slow = m3.add("http://127.0.0.1:8767/big.iso")
+time.sleep(1.8)
+check2("slow download: 'started' notice replaces the old one", len(created) == 2 and created[0].destroyed and '"event": "start"' in created[1].html)
+slow.cancel()
+api_t = created[1].js_api
+check2("toast close works", api_t.close() and created[1].destroyed and m3.notifier.win is None)
+m3.cfg["notify"] = False; d2 = m3.add(B + "nope.bin"); wait(lambda: d2.status == "error", 40); time.sleep(1.6); a3.state()
+check2("no toasts when notifications are off", len(created) == 2)
+m3.cfg["notify"] = True; a3.resume(d2.uid); time.sleep(0.5); wait(lambda: d2.status == "error", 40); a3.state()   # الحالة نفسها، لكن محاولة جديدة
+check2("error toast", '"event": "error"' in created[-1].html)
+d3 = pydm.YtdlpDownload("https://x.com/1", "/tmp", {}, 4)
+m3.cfg["compat"] = True; m4 = m3.add("https://www.youtube.com/watch?v=z", None, {"kind": "ytdlp", "cookies": [{"name": "a"}]})
+check2("manager passes compat + cookies to yt-dlp jobs", m4.compat is True and m4.cookies == [{"name": "a"}])
+print("\nALL OK" if ok and ok2 else "\nSOME FAILED")

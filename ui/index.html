@@ -331,6 +331,9 @@ dialog h2 { margin: 0; font-size: 17px; font-weight: 600; }
       <div class="range"><input type="range" id="set-conns" min="1" max="16" step="1"><output id="conns-out" class="num"></output></div>
     </label>
     <p class="note">اتصالات أكثر تعني سرعة أعلى، لكن بعض المواقع تحدّها.</p>
+    <label class="check"><input type="checkbox" id="set-compat"> فيديو متوافق مع البريمير وبرامج المونتاج (H.264)</label>
+    <p class="note">يوتيوب يعطي H.264 حتى 1080p. أطفئه لأعلى جودة متاحة (4K) بترميزات لا يقبلها البريمير.</p>
+    <label class="check"><input type="checkbox" id="set-notify"> إشعار عند بدء التحميل وانتهائه</label>
     <label class="check"><input type="checkbox" id="set-startup"> تشغيل PyDM مع بدء الويندوز</label>
     <div class="dlg-foot"><button class="go" value="close">تم</button></div>
   </form>
@@ -440,7 +443,7 @@ function updateRow(el, r) {
     nm.dataset.n = r.name; nm.title = r.url; nm.textContent = "";
     // الاسم في عزل اتجاهي مستقل والامتداد منفصل، حتى لا يصير "3.mp4" إلى "mp4.3" في الأسماء العربية
     nm.dir = /[\u0590-\u08FF]/.test(r.name) ? "rtl" : "ltr";
-    const m = r.name.match(/^(.+?)(\.[A-Za-z0-9]{1,5})$/);
+    const m = r.name.match(/^(.*?)(\S*\.[A-Za-z0-9]{1,5})$/);
     const base = document.createElement("bdi"); base.textContent = m ? m[1] : r.name; nm.appendChild(base);
     if (m) { const ext = document.createElement("bdi"); ext.className = "ext"; ext.dir = "ltr"; ext.textContent = m[2]; nm.appendChild(ext); }
   }
@@ -576,6 +579,8 @@ $("#open-settings").addEventListener("click", () => {
   $("#set-folder").textContent = s.folder;
   $("#set-conns").value = s.conns; $("#conns-out").textContent = s.conns;
   $("#set-startup").checked = s.startup;
+  $("#set-compat").checked = s.compat;
+  $("#set-notify").checked = s.notify;
   dlg.showModal();
 });
 $("#pick-folder").addEventListener("click", async () => {
@@ -583,6 +588,8 @@ $("#pick-folder").addEventListener("click", async () => {
 });
 $("#set-conns").addEventListener("input", e => $("#conns-out").textContent = e.target.value);
 $("#set-conns").addEventListener("change", e => call("set_conns", +e.target.value).then(refresh));
+for (const [id, key] of [["#set-compat", "compat"], ["#set-notify", "notify"]])
+  $(id).addEventListener("change", e => call("set_option", key, e.target.checked).then(refresh));
 $("#set-startup").addEventListener("change", async e => {
   const ok = await call("set_startup", e.target.checked);
   if (!ok) { e.target.checked = !e.target.checked; toast("تعذّر تغيير التشغيل مع الويندوز"); } else refresh();

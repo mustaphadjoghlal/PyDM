@@ -86,15 +86,17 @@ async function renderList() {
 }
 
 (async () => {
-  const { enabled = true, floatBtn = true } = await chrome.storage.local.get(["enabled", "floatBtn"]);
+  const { enabled = true, floatBtn = true, skipImages = true } = await chrome.storage.local.get(["enabled", "floatBtn", "skipImages"]);
   $("en").checked = enabled;
   $("fl").checked = floatBtn;
+  $("si").checked = skipImages;
   ping();
   renderList();
 })();
 
 $("en").addEventListener("change", e => chrome.storage.local.set({ enabled: e.target.checked }));
 $("fl").addEventListener("change", e => chrome.storage.local.set({ floatBtn: e.target.checked }));
+$("si").addEventListener("change", e => chrome.storage.local.set({ skipImages: e.target.checked }));
 
 $("send").addEventListener("click", async () => {
   const url = $("url").value.trim();

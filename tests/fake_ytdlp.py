@@ -4,6 +4,8 @@ args = sys.argv[1:]
 open(os.environ["FAKE_LOG"], "a").write(json.dumps(args) + "\n")
 out = args[args.index("-o") + 1].replace("%%", "%")
 mode = os.environ.get("FAKE_MODE", "ok")
+if "--cookies" in args and os.environ.get("FAKE_COPY_COOKIES"):
+    open(os.environ["FAKE_COPY_COOKIES"], "w").write(open(args[args.index("--cookies") + 1]).read())
 url = args[-1]
 audio = "-x" in args
 ext = "mp3" if audio else "mp4"

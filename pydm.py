@@ -441,6 +441,7 @@ class Download:
         prev = self.thread
         self.stop = threading.Event()
         self.cancelled = False
+        self.attempt = getattr(self, "attempt", 0) + 1
         self.status = "queued"
         self.thread = threading.Thread(target=self._run, args=(self.stop, prev), daemon=True)
         self.thread.start()
@@ -827,6 +828,9 @@ class YtdlpDownload(Download):
         self.media = "audio" if media == "audio" else "video"
         self.bytes_done = 0
         self.proc = None
+        self.cookies = []      # من المتصفح، في الذاكرة فقط (لا تُحفظ على القرص)
+        self.compat = True     # H.264 + AAC: صيغة يقبلها البريمير وكل البرامج
+        self._cookie_file = ""
 
     def to_dict(self):
         d = super().to_dict()
@@ -879,6 +883,42 @@ class YtdlpDownload(Download):
         elif line.startswith("ERROR:"):
             self.error = line[6:].strip()[:160]
 
+    def _is_youtube(self):
+        return bool(re.search(r"(^|\.)(youtube\.com|youtube-nocookie\.com|youtu\.be)$",
+                              urllib.parse.urlparse(self.url).hostname or ""))
+
+    def _write_cookies(self):
+        """ملف كوكيز بصيغة Netscape لـ yt-dlp. فيسبوك وإنستغرام يتطلبان غالباً تسجيل الدخول."""
+        if not self.cookies or self._is_youtube():
+            return ""
+        path = os.path.join(APP_DIR, f"cookies-{os.getpid()}-{id(self)}.txt")
+        lines = ["# Netscape HTTP Cookie File"]
+        for c in self.cookies:
+            dom = c["domain"]
+            lines.append("\t".join([
+                ("#HttpOnly_" if c.get("httpOnly") else "") + dom,
+                "TRUE" if dom.startswith(".") else "FALSE",
+                c.get("path") or "/",
+                "TRUE" if c.get("secure") else "FALSE",
+                str(int(c.get("expirationDate") or 0)),
+                c["name"], c["value"]]))
+        try:
+            os.makedirs(APP_DIR, exist_ok=True)
+            with open(path, "w", encoding="utf-8", newline="\n") as f:
+                f.write("\n".join(lines) + "\n")
+            self._cookie_file = path
+            return path
+        except Exception:
+            return ""
+
+    def _drop_cookies(self):
+        if self._cookie_file:
+            try:
+                os.remove(self._cookie_file)
+            except Exception:
+                pass
+            self._cookie_file = ""
+
     def _command(self):
         exe = find_ytdlp()
         if not exe:
@@ -891,8 +931,11 @@ class YtdlpDownload(Download):
         # لا نمرر وكيل المتصفح ولا الكوكيز: yt-dlp يختار عملاء يوتيوب المناسبين بنفسه،
         # وتمرير ترويسات المتصفح يدفعه لعملاء تحتاج رموزاً إضافية فتختفي الصيغ.
         ref = self.headers.get("Referer")
-        if ref and not re.search(r"(^|\.)(youtube\.com|youtu\.be)$", urllib.parse.urlparse(self.url).hostname or ""):
+        if ref and not self._is_youtube():
             cmd += ["--referer", ref]
+        ck = self._write_cookies()
+        if ck:
+            cmd += ["--cookies", ck]
         js = find_js_runtime()
         if js:
             cmd += ["--js-runtimes", js]
@@ -901,6 +944,9 @@ class YtdlpDownload(Download):
         if self.media == "audio":
             cmd += ["-x", "--audio-format", "mp3"] if ff else ["-f", "ba/b"]
         else:
+            if self.compat:
+                # H.264 + AAC أولاً: VP9/AV1/Opus داخل mp4 يرفضها البريمير ("unsupported compression type")
+                cmd += ["-S", "vcodec:h264,res,acodec:m4a"]
             cmd += ["-f", "bv*+ba/b", "--merge-output-format", "mp4"] if ff else ["-f", "b"]
         return cmd + [self.url]
 
@@ -934,6 +980,7 @@ class YtdlpDownload(Download):
             proc.wait()
             t.join(3)
             self.proc = None
+            self._drop_cookies()
             self.speed = 0
             if self.cancelled:
                 self._rm_part()
@@ -1014,7 +1061,7 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(404)
         try:
             n = int(self.headers.get("Content-Length", "0"))
-            if n <= 0 or n > 65536:
+            if n <= 0 or n > 262144:
                 return self._send(400)
             data = json.loads(self.rfile.read(n).decode("utf-8"))
             url = str(data.get("url", ""))
@@ -1026,6 +1073,13 @@ class Handler(BaseHTTPRequestHandler):
             meta = {"kind": kind if kind in ("stream", "ytdlp") else "",
                     "mode": "audio" if data.get("mode") == "audio" else "video",
                     "title": str(data.get("title", ""))[:200]}
+            cookies = []
+            for c in (data.get("cookies") or [])[:300]:
+                if isinstance(c, dict) and c.get("name") and c.get("domain"):
+                    cookies.append({k: c.get(k) for k in
+                                    ("name", "value", "domain", "path", "secure", "httpOnly", "expirationDate")})
+                    cookies[-1]["value"] = str(cookies[-1]["value"] or "")
+            meta["cookies"] = cookies
             incoming.put((url, hdrs, meta))
             self._send(200, {"ok": True})
         except Exception:
@@ -1158,7 +1212,11 @@ class Manager:
         self.cfg = load_json(CONF_FILE, {})
         self.cfg.setdefault("folder", default_dir)
         self.cfg.setdefault("conns", 8)
+        self.cfg.setdefault("compat", True)   # فيديو H.264 يقبله البريمير
+        self.cfg.setdefault("notify", True)   # إشعار عند بدء التحميل وانتهائه
         self.items = []
+        self.notifier = None                  # يُعيَّن عند فتح النافذة
+        self._last_status = {}
         self.lock = threading.RLock()
         self._uid = 0
         for d in load_json(LIST_FILE, []):
@@ -1182,14 +1240,44 @@ class Manager:
         kind = meta.get("kind")
         if kind == "ytdlp" or (kind != "stream" and is_ytdlp_url(url)):
             d = YtdlpDownload(url, folder, headers, conns, meta.get("title", ""), meta.get("mode", "video"))
+            d.cookies = meta.get("cookies") or []
+            d.compat = bool(self.cfg.get("compat", True))
         elif kind == "stream" or is_stream_url(url):
             d = StreamDownload(url, folder, headers, conns, meta.get("title", ""))
         else:
             d = Download(url, folder, headers, conns)
         with self.lock:
             self._insert(d)
+            self._last_status[d.uid] = None
         d.start()
+        # إشعار البدء بعد لحظة: حتى يُعرف اسم الملف بدل الرابط
+        t = threading.Timer(1.5, lambda: d.status in ("downloading", "queued") and self._notify("start", d))
+        t.daemon = True
+        t.start()
         return d
+
+    def _notify(self, event, d):
+        if self.notifier and self.cfg.get("notify", True):
+            try:
+                self.notifier.show(event, self.row(d))
+            except Exception:
+                log_error("notify")
+
+    def watch_status(self):
+        """يكشف اكتمال التحميلات أو فشلها لإظهار الإشعار."""
+        with self.lock:
+            items = list(self.items)
+        for d in items:
+            key = (d.status, getattr(d, "attempt", 0))
+            if d.uid not in self._last_status:   # عناصر محمّلة من الجلسة السابقة: لا إشعار
+                self._last_status[d.uid] = key
+                continue
+            if key != self._last_status[d.uid]:
+                self._last_status[d.uid] = key
+                if d.status == "done":
+                    self._notify("done", d)
+                elif d.status == "error":
+                    self._notify("error", d)
 
     def get(self, uid):
         with self.lock:
@@ -1228,6 +1316,7 @@ class Manager:
             for d in list(self.items):
                 if d.status == "canceled" and not (d.thread and d.thread.is_alive()):
                     self.items.remove(d)
+        self.watch_status()
         return added
 
     def row(self, d):
@@ -1252,7 +1341,8 @@ class Manager:
             "items": rows,
             "speed": sum(r["speed"] for r in rows),
             "settings": {"folder": self.cfg["folder"], "conns": int(self.cfg.get("conns", 8)),
-                         "startup": startup_get()},
+                         "startup": startup_get(), "compat": bool(self.cfg.get("compat", True)),
+                         "notify": bool(self.cfg.get("notify", True))},
             "tools": {"ytdlp": bool(find_ytdlp()), "ffmpeg": bool(find_ffmpeg()),
                       "deno": bool(find_js_runtime())},
         }
@@ -1264,6 +1354,9 @@ class Manager:
         save_json(LIST_FILE, data)
 
     def shutdown(self):
+        if self.notifier:
+            self.notifier.close()
+            self.notifier = None
         with self.lock:
             items = list(self.items)
         for d in items:
@@ -1369,6 +1462,90 @@ class Api:
 
     def set_startup(self, on):
         return startup_set(bool(on))
+
+    def set_option(self, key, value):
+        if key not in ("compat", "notify"):
+            return False
+        self._mgr.cfg[key] = bool(value)
+        self._mgr.save()
+        return True
+
+
+TOAST_W, TOAST_H = 380, 104
+
+
+class ToastApi:
+    def __init__(self, notifier):
+        self._n = notifier
+
+    def act(self, action, path=""):
+        if action == "open" and path:
+            open_path(path)
+        elif action == "folder" and path:
+            reveal_path(path)
+        elif action == "show":
+            show_window()
+        self._n.close()
+        return True
+
+    def close(self):
+        self._n.close()
+        return True
+
+
+class Notifier:
+    """نافذة إشعار صغيرة أسفل يمين الشاشة (مثل IDM)، لا تأخذ التركيز ولا تظهر في شريط المهام."""
+
+    def __init__(self):
+        self.win = None
+        self.timer = None
+        self.lock = threading.Lock()
+        self.api = ToastApi(self)
+        try:
+            with open(resource("ui", "toast.html"), encoding="utf-8") as f:
+                self.template = f.read()
+        except Exception:
+            self.template = ""
+
+    def _pos(self):
+        import webview
+        try:
+            sc = webview.screens[0]
+            return sc.width - TOAST_W - 16, sc.height - TOAST_H - 64
+        except Exception:
+            return None, None
+
+    def close(self):
+        with self.lock:
+            w, self.win = self.win, None
+            if self.timer:
+                self.timer.cancel()
+                self.timer = None
+        if w is not None:
+            try:
+                w.destroy()
+            except Exception:
+                pass
+
+    def show(self, event, row):
+        if not self.template:
+            return
+        import webview
+        data = {"event": event, "name": row["name"], "path": row.get("path") or "",
+                "error": row.get("error") or "", "size": row.get("total") or 0,
+                "source": row.get("source") or ""}
+        html = self.template.replace("/*__DATA__*/null", json.dumps(data, ensure_ascii=False))
+        self.close()      # إشعار واحد في كل مرة: الجديد يحل محل القديم
+        x, y = self._pos()
+        w = webview.create_window(
+            "PyDM", html=html, js_api=self.api, width=TOAST_W, height=TOAST_H, x=x, y=y,
+            resizable=False, frameless=True, on_top=True, focus=False, shadow=True,
+            background_color="#03154A")
+        with self.lock:
+            self.win = w
+            self.timer = threading.Timer(7 if event == "start" else 12, self.close)
+            self.timer.daemon = True
+            self.timer.start()
 
 
 def show_window():
@@ -1483,6 +1660,12 @@ def main():
             width=1080, height=660, min_size=(760, 480), background_color="#061233")
         UI["window"] = window
         window.events.closing += lambda: mgr.shutdown()
+
+        def start_notifier():
+            mgr.notifier = Notifier()
+            trace("notifier ready")
+
+        window.events.loaded += start_notifier
         window.events.loaded += lambda: trace("page loaded")
         trace("starting webview")
         webview.start(gui="edgechromium" if sys.platform.startswith("win") else None,
