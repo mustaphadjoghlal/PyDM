@@ -511,7 +511,8 @@ function render() {
   const t = state.tools;
   $("#tools").innerHTML =
     `<span><i class="dot ${t.ytdlp ? "on" : ""}"></i>yt-dlp ${t.ytdlp ? "جاهز" : "غير موجود"}</span>` +
-    `<span><i class="dot ${t.ffmpeg ? "on" : ""}"></i>ffmpeg ${t.ffmpeg ? "جاهز" : "غير موجود"}</span>`;
+    `<span><i class="dot ${t.ffmpeg ? "on" : ""}"></i>ffmpeg ${t.ffmpeg ? "جاهز" : "غير موجود"}</span>` +
+    `<span><i class="dot ${t.deno ? "on" : ""}"></i>Deno ${t.deno ? "جاهز" : "غير موجود"}</span>`;
 }
 
 async function call(fn, ...args) {

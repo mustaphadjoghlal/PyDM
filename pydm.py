@@ -135,6 +135,53 @@ def find_ffmpeg():
     return shutil.which("ffmpeg")
 
 
+def _tool_dirs():
+    dirs = []
+    try:
+        dirs.append(os.path.dirname(os.path.abspath(sys.argv[0])))
+    except Exception:
+        pass
+    if sys.executable:
+        dirs.append(os.path.dirname(sys.executable))
+    dirs.append(APP_DIR)
+    return dirs
+
+
+def find_js_runtime():
+    """يوتيوب يتطلب محرك جافاسكربت ليفك تحدّيه، وإلا تختفي الصيغ ويظهر
+    'Requested format is not available'. Deno يُضمَّن مع المثبّت، و Node بديل إن وُجد."""
+    for d in _tool_dirs():
+        for n in ("deno.exe", "deno"):
+            p = os.path.join(d, n)
+            if os.path.isfile(p):
+                return f"deno:{p}"
+    p = shutil.which("deno")
+    if p:
+        return f"deno:{p}"
+    p = shutil.which("node")
+    if p:
+        return f"node:{p}"
+    return None
+
+
+_ytdlp_updated = threading.Event()
+
+
+def update_ytdlp_once():
+    """تحديث yt-dlp مرة في كل تشغيل للبرنامج: يوتيوب يتغير كثيراً والنسخة القديمة تتعطل."""
+    if _ytdlp_updated.is_set():
+        return
+    _ytdlp_updated.set()
+    exe = find_ytdlp()
+    if not exe or len(exe) != 1 or not os.access(os.path.dirname(exe[0]), os.W_OK):
+        return
+    try:
+        subprocess.run(exe + ["-U"], creationflags=NOWIN, stdin=subprocess.DEVNULL,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=120)
+    except Exception:
+        pass
+
+
 def find_ytdlp():
     """yt-dlp اختياري: ملف بجانب البرنامج أو في ~/.pydm أو PATH، وإلا وحدة بايثون عند التشغيل من المصدر.
     يعيد قائمة الأمر (أو None)."""
@@ -840,11 +887,15 @@ class YtdlpDownload(Download):
         tpl = os.path.join(self.folder.replace("%", "%%"), "%(title).150B.%(ext)s")
         cmd = exe + ["--no-playlist", "--newline", "--no-colors", "--progress",
                      "--progress-template", self.TEMPLATE,
-                     "--print", "after_move:PYDMFILE %(filepath)s", "-o", tpl,
-                     "--user-agent", self.headers.get("User-Agent", DEFAULT_UA)]
-        for k, v in self.headers.items():
-            if k.lower() != "user-agent":
-                cmd += ["--add-header", f"{k}:{v}"]
+                     "--print", "after_move:PYDMFILE %(filepath)s", "-o", tpl]
+        # لا نمرر وكيل المتصفح ولا الكوكيز: yt-dlp يختار عملاء يوتيوب المناسبين بنفسه،
+        # وتمرير ترويسات المتصفح يدفعه لعملاء تحتاج رموزاً إضافية فتختفي الصيغ.
+        ref = self.headers.get("Referer")
+        if ref and not re.search(r"(^|\.)(youtube\.com|youtu\.be)$", urllib.parse.urlparse(self.url).hostname or ""):
+            cmd += ["--referer", ref]
+        js = find_js_runtime()
+        if js:
+            cmd += ["--js-runtimes", js]
         if ff:
             cmd += ["--ffmpeg-location", ff]
         if self.media == "audio":
@@ -861,6 +912,7 @@ class YtdlpDownload(Download):
             self.error = ""
             self.status = "downloading"
             os.makedirs(self.folder, exist_ok=True)
+            update_ytdlp_once()
             cmd = self._command()
             env = dict(os.environ, PYTHONIOENCODING="utf-8", PYTHONUTF8="1")
             self.bytes_done = 0
@@ -890,7 +942,12 @@ class YtdlpDownload(Download):
             if ev.is_set():
                 return  # إيقاف مؤقت
             if proc.returncode != 0:
-                raise IOError(self.error or f"yt-dlp رمز الخروج {proc.returncode}")
+                err = self.error or f"yt-dlp رمز الخروج {proc.returncode}"
+                if "Requested format is not available" in err and not find_js_runtime():
+                    err = "يوتيوب يحتاج محرك Deno: أعد تثبيت PyDM بآخر نسخة. (" + err[:80] + ")"
+                elif "not a bot" in err or "Sign in to confirm" in err:
+                    err = "يوتيوب طلب تسجيل الدخول للتحقق. جرّب لاحقاً أو من شبكة أخرى. (" + err[:60] + ")"
+                raise IOError(err)
             if not (self.path and os.path.isfile(self.path)):
                 raise IOError("لم يُنشأ الملف")
             self.total = os.path.getsize(self.path)
@@ -1196,7 +1253,8 @@ class Manager:
             "speed": sum(r["speed"] for r in rows),
             "settings": {"folder": self.cfg["folder"], "conns": int(self.cfg.get("conns", 8)),
                          "startup": startup_get()},
-            "tools": {"ytdlp": bool(find_ytdlp()), "ffmpeg": bool(find_ffmpeg())},
+            "tools": {"ytdlp": bool(find_ytdlp()), "ffmpeg": bool(find_ffmpeg()),
+                      "deno": bool(find_js_runtime())},
         }
 
     def save(self):

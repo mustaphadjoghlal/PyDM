@@ -1,11 +1,12 @@
 import os, sys, time, json, shutil, tempfile, threading, http.client
-sys.path.insert(0, "/home/claude/PyDM")
+sys.path.insert(0, "/home/claude/pydm")
 import pydm
 
 tmp = tempfile.mkdtemp()
 bin_dir = os.path.join(tmp, "bin"); os.makedirs(bin_dir)
 os.symlink("/home/claude/t/fake_ytdlp.py", os.path.join(bin_dir, "yt-dlp"))
 os.environ["PATH"] = bin_dir + os.pathsep + os.environ["PATH"]
+open(os.path.join(bin_dir, "deno"), "w").close(); os.chmod(os.path.join(bin_dir, "deno"), 0o755)
 os.environ["FAKE_LOG"] = os.path.join(tmp, "calls.log")
 out = os.path.join(tmp, "dl 100%")          # يحتوي مسافة وعلامة %
 HDR = {"Referer": "https://www.youtube.com/watch?v=abc", "Cookie": "a=b", "User-Agent": "UA/1"}
@@ -27,7 +28,8 @@ d = pydm.YtdlpDownload(URL, out, HDR, 4, "T"); d.start(); st = wait(d)
 a = last_call()
 check("video ok", st == "done" and os.path.isfile(d.path) and d.name == "عنوان الفيديو.mp4" and d.percent() == 100, f"{st} {d.error} {d.name}")
 check("output template escapes % in folder", any("dl 100%%" in x for x in a))
-check("headers/UA passed", "Referer:https://www.youtube.com/watch?v=abc" in a and "Cookie:a=b" in a and a[a.index("--user-agent")+1] == "UA/1")
+check("no browser UA/cookies/referer sent to yt-dlp for youtube", "--user-agent" not in a and not any("Cookie" in x for x in a) and "--referer" not in a and "--add-header" not in a, a)
+check("js runtime passed", "--js-runtimes" in a and a[a.index("--js-runtimes")+1].startswith("deno:"), a)
 check("with ffmpeg: merge mp4", "--merge-output-format" in a and "--ffmpeg-location" in a and "bv*+ba/b" in a)
 check("url last + no-playlist", a[-1] == URL and "--no-playlist" in a)
 
@@ -62,6 +64,10 @@ os.environ["FAKE_DELAY"] = "0.5"
 d = pydm.YtdlpDownload(URL, out, HDR, 4, "T"); d.start(); time.sleep(1.0); d.cancel(); time.sleep(1.5)
 check("cancel", d.status == "canceled" and d.proc is None)
 os.environ["FAKE_DELAY"] = "0.05"
+
+# non-youtube sites keep the referer
+d = pydm.YtdlpDownload("https://vimeo.com/123", out, {"Referer": "https://site.example/page"}, 4, "T"); d.start(); wait(d)
+a = last_call(); check("referer kept for other sites", a[a.index("--referer")+1] == "https://site.example/page", a)
 
 # error from yt-dlp
 os.environ["FAKE_MODE"] = "fail"

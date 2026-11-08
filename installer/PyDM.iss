@@ -40,6 +40,7 @@ Name: "startup"; Description: "تشغيل PyDM مع بدء الويندوز (ل�
 Source: "..\dist\PyDM\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "..\tools\yt-dlp.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\tools\ffmpeg.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\tools\deno.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\extension\*"; DestDir: "{app}\extension"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]

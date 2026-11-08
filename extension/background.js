@@ -176,7 +176,12 @@ chrome.tabs.onRemoved.addListener((tabId) => {
 });
 
 // ---------- رسائل النافذة المنبثقة
-chrome.runtime.onMessage.addListener((msg, _sender, reply) => {
+chrome.runtime.onMessage.addListener((msg, sender, reply) => {
+  if (msg && msg.type === "media") {   // الزر العائم يطلب الملفات المرصودة في تبويبه
+    const key = "m" + (sender.tab ? sender.tab.id : -1);
+    chrome.storage.session.get(key).then(r => reply({ items: r[key] || [] })).catch(() => reply({ items: [] }));
+    return true;
+  }
   if (msg && msg.type === "send") {
     const kind = msg.kind === "stream" || msg.kind === "ytdlp" ? msg.kind : "";
     handoff(msg.url, msg.referer, { kind, title: msg.title, mode: msg.mode === "audio" ? "audio" : "video" })

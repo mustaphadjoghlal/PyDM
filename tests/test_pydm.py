@@ -1,6 +1,6 @@
 import os, sys, time, threading, shutil, tempfile, hashlib, subprocess, json
 from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler
-sys.path.insert(0, "/home/claude/PyDM")
+sys.path.insert(0, "/home/claude/pydm")
 import pydm
 
 WWW = "/home/claude/t/www"
