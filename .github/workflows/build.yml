@@ -24,7 +24,7 @@ jobs:
 
       # نسخة مجلد (onedir): تبدأ أسرع ويقل حجبها من مضاد الفيروسات مقارنة بـ onefile
       - name: Build PyDM (folder)
-        run: pyinstaller --noconfirm --onedir --windowed --name PyDM --icon assets/icon.ico --add-data "assets/icon.png;assets" --add-data "ui;ui" --collect-all webview --contents-directory lib pydm.py
+        run: pyinstaller --noconfirm --onedir --windowed --name PyDM --icon assets/icon.ico --add-data "assets/icon.png;assets" --add-data "assets/icon.ico;assets" --add-data "ui;ui" --collect-all webview --contents-directory lib pydm.py
 
       # ينجح فقط إذا فُتحت النافذة وحمّلت الواجهة (ui=true)، وليس مجرد بدء الخادم
       - name: Smoke test (window opens and the interface loads)

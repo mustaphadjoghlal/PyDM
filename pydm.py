@@ -1370,6 +1370,13 @@ def resource(*parts):
     return os.path.join(base, *parts)
 
 
+def window_icon():
+    """ويندوز يقبل .ico فقط لأيقونة النافذة (System.Drawing.Icon)؛ PNG يُسقط البرنامج."""
+    name = "icon.ico" if sys.platform.startswith("win") else "icon.png"
+    path = resource("assets", name)
+    return path if os.path.isfile(path) else None
+
+
 def main():
     os.makedirs(APP_DIR, exist_ok=True)
     try:
@@ -1421,7 +1428,7 @@ def main():
         window.events.loaded += lambda: trace("page loaded")
         trace("starting webview")
         webview.start(gui="edgechromium" if sys.platform.startswith("win") else None,
-                      icon=resource("assets", "icon.png"), private_mode=False,
+                      icon=window_icon(), private_mode=False,
                       storage_path=os.path.join(APP_DIR, "webview"))
         trace("webview closed")
     except Exception:
