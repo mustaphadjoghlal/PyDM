@@ -3,13 +3,22 @@
 <head>
 <meta charset="utf-8">
 <style>
-  body { font-family: Segoe UI, Tahoma, sans-serif; width: 270px; margin: 0; padding: 12px; font-size: 14px; }
+  body { font-family: Segoe UI, Tahoma, sans-serif; width: 340px; margin: 0; padding: 12px; font-size: 14px; }
   .row { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
   #state { font-weight: bold; }
   .ok { color: #1e8449; } .bad { color: #c0392b; }
   input[type=text] { width: 100%; box-sizing: border-box; padding: 6px; margin-bottom: 6px; direction: ltr; }
   button { width: 100%; padding: 7px; cursor: pointer; }
   #msg { margin-top: 6px; font-size: 12px; min-height: 16px; }
+  h4 { margin: 12px 0 6px; font-size: 13px; }
+  #list { max-height: 220px; overflow-y: auto; }
+  .item { display: flex; align-items: center; gap: 6px; padding: 5px 0; border-bottom: 1px solid #ddd; }
+  .tag { background: #1e8449; color: #fff; border-radius: 3px; padding: 1px 5px; font-size: 11px; flex: none; }
+  .tag.stream { background: #2471a3; }
+  .nm { flex: 1; min-width: 0; direction: ltr; text-align: left; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .sz { color: #666; font-size: 12px; flex: none; }
+  .item button { width: auto; padding: 3px 8px; flex: none; }
+  #empty { color: #777; font-size: 12px; }
 </style>
 </head>
 <body>
@@ -18,6 +27,13 @@
   <input type="text" id="url" placeholder="الصق رابطاً هنا">
   <button id="send">إرسال إلى PyDM</button>
   <div id="msg"></div>
+  <div id="site" style="display:none">
+    <h4>هذه الصفحة (yt-dlp)</h4>
+    <div class="row"><button id="site-v">تحميل الفيديو</button><button id="site-a" style="margin-right:6px">صوت MP3</button></div>
+  </div>
+  <h4>فيديو وصوت في هذه الصفحة</h4>
+  <div id="list"></div>
+  <div id="empty">لم يُرصد شيء بعد. شغّل الفيديو ثم افتح هذه النافذة.</div>
   <script src="popup.js"></script>
 </body>
 </html>
