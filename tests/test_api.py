@@ -1,6 +1,6 @@
 import os, sys, time, json, tempfile, threading, urllib.request
 from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler
-sys.path.insert(0, "/home/claude/PyDM")
+sys.path.insert(0, "/home/claude/pydm")
 import pydm
 home = tempfile.mkdtemp()
 pydm.APP_DIR = os.path.join(home, ".pydm"); os.makedirs(pydm.APP_DIR)

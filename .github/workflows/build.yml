@@ -32,12 +32,20 @@ jobs:
         run: |
           $p = Start-Process dist\PyDM\PyDM.exe -PassThru
           $ok = $false
-          for ($i = 0; $i -lt 30; $i++) {
+          for ($i = 0; $i -lt 40; $i++) {
             Start-Sleep -Seconds 1
-            try { $r = Invoke-WebRequest http://127.0.0.1:9614/ping -UseBasicParsing; if ($r.Content -match '"ui": true') { $ok = $true; break } } catch {}
+            if ($p.HasExited) { Write-Host "PyDM.exe exited with code $($p.ExitCode)"; break }
+            try {
+              $r = Invoke-WebRequest http://127.0.0.1:9614/ping -UseBasicParsing -TimeoutSec 2
+              Write-Host "ping: $($r.Content)"
+              if ($r.Content -match '"ui": true') { $ok = $true; break }
+            } catch { Write-Host "ping failed: $($_.Exception.Message)" }
           }
           Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
-          if (Test-Path "$env:USERPROFILE\.pydm\error.log") { Get-Content "$env:USERPROFILE\.pydm\error.log" }
+          foreach ($f in 'startup.log','error.log','crash.log') {
+            $path = "$env:USERPROFILE\.pydm\$f"
+            if (Test-Path $path) { Write-Host "===== $f"; Get-Content $path }
+          }
           if (-not $ok) { throw "PyDM.exe started but the interface did not load" }
 
       - name: Download yt-dlp and ffmpeg

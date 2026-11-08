@@ -1221,6 +1221,7 @@ class Api:
         self._mgr = mgr
 
     def ready(self):
+        trace("ui ready (javascript bridge works)")
         UI["ready"] = True
         return True
 
@@ -1352,6 +1353,18 @@ def fatal(msg):
     print(msg, file=sys.stderr)
 
 
+TRACE_FILE = os.path.join(APP_DIR, "startup.log")
+
+
+def trace(msg):
+    """سجل خطوات بدء التشغيل (يُكتب من جديد في كل تشغيل) لمعرفة أين يتوقف البرنامج إن لم يفتح."""
+    try:
+        with open(TRACE_FILE, "a", encoding="utf-8") as f:
+            f.write(f"{time.strftime('%H:%M:%S')} {msg}\n")
+    except Exception:
+        pass
+
+
 def resource(*parts):
     base = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
     return os.path.join(base, *parts)
@@ -1359,6 +1372,17 @@ def resource(*parts):
 
 def main():
     os.makedirs(APP_DIR, exist_ok=True)
+    try:
+        open(TRACE_FILE, "w").close()
+    except Exception:
+        pass
+    trace(f"start frozen={getattr(sys, 'frozen', False)} python={sys.version.split()[0]}")
+    try:  # الانهيارات الأصلية (خارج بايثون) تُكتب هنا أيضاً
+        import faulthandler
+        main._fh = open(os.path.join(APP_DIR, "crash.log"), "w")
+        faulthandler.enable(main._fh)
+    except Exception:
+        pass
     try:
         server = ThreadingHTTPServer(("127.0.0.1", PORT), Handler)
     except OSError:
@@ -1369,8 +1393,10 @@ def main():
             fatal("المنفذ %d مشغول ببرنامج آخر، فلا يمكن تشغيل PyDM." % PORT)
         return
     threading.Thread(target=server.serve_forever, daemon=True).start()
+    trace("server listening")
 
     mgr = Manager()
+    trace(f"manager loaded {len(mgr.items)} items")
 
     def autosave():
         while True:
@@ -1384,14 +1410,20 @@ def main():
     threading.Thread(target=autosave, daemon=True).start()
     try:
         import webview
+        trace(f"pywebview {getattr(webview, '__version__', '?')} imported")
+        page = resource("ui", "index.html")
+        trace(f"ui page {page} exists={os.path.isfile(page)}")
         window = webview.create_window(
-            "PyDM", resource("ui", "index.html"), js_api=Api(mgr),
+            "PyDM", page, js_api=Api(mgr),
             width=1080, height=660, min_size=(760, 480), background_color="#061233")
         UI["window"] = window
         window.events.closing += lambda: mgr.shutdown()
+        window.events.loaded += lambda: trace("page loaded")
+        trace("starting webview")
         webview.start(gui="edgechromium" if sys.platform.startswith("win") else None,
                       icon=resource("assets", "icon.png"), private_mode=False,
                       storage_path=os.path.join(APP_DIR, "webview"))
+        trace("webview closed")
     except Exception:
         log_error("startup")
         mgr.shutdown()
