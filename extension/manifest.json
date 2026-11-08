@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "PyDM Catcher",
-  "version": "1.4",
+  "version": "1.5",
   "description": "يلتقط التحميلات والفيديو والصوت ويمررها إلى برنامج PyDM",
   "permissions": [
     "downloads",

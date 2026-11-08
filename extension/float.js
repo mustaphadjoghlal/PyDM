@@ -5,7 +5,31 @@
 
   const MIN_W = 240, MIN_H = 135;
   const SITES = /(^|\.)(youtube\.com|youtube-nocookie\.com|youtu\.be|facebook\.com|fb\.watch|instagram\.com|tiktok\.com|twitter\.com|x\.com|vimeo\.com|dailymotion\.com|twitch\.tv|soundcloud\.com|reddit\.com)$/i;
-  const POST_PATH = /\/(watch|shorts|embed|live|reel|reels|videos?|p|status|clip|v|share|permalink|posts|story)\b|\/\d{6,}/i;
+  // روابط "فيديو واحد" لكل موقع. صارمة عمداً: "/watch/" وحدها في فيسبوك صفحة خلاصة وليست فيديو
+  const VIDEO_URL = [
+    [/(^|\.)(youtube\.com|youtube-nocookie\.com)$/i, u => /^\/(watch$|shorts\/|embed\/|live\/)/.test(u.pathname) && (u.pathname !== "/watch" || u.searchParams.has("v"))],
+    [/(^|\.)youtu\.be$/i, u => u.pathname.length > 1],
+    [/(^|\.)facebook\.com$/i, u => (/^\/watch\/?$/.test(u.pathname) && u.searchParams.has("v")) ||
+                                    /\/videos\/(\d+|[\w.-]+\/\d+)/.test(u.pathname) || /^\/(reel|share\/[vr])\/\w+/.test(u.pathname) ||
+                                    (/^\/(story\.php|permalink\.php)$/.test(u.pathname) && u.searchParams.has("story_fbid")) ||
+                                    /\/posts\/[\w-]+/.test(u.pathname)],
+    [/(^|\.)fb\.watch$/i, u => u.pathname.length > 1],
+    [/(^|\.)instagram\.com$/i, u => /^\/(p|reel|reels|tv)\/[\w-]+/.test(u.pathname) || /^\/[\w.]+\/(p|reel)\/[\w-]+/.test(u.pathname)],
+    [/(^|\.)tiktok\.com$/i, u => /\/video\/\d+/.test(u.pathname)],
+    [/(^|\.)(twitter|x)\.com$/i, u => /\/status\/\d+/.test(u.pathname)],
+    [/(^|\.)vimeo\.com$/i, u => /\/\d{5,}/.test(u.pathname)],
+    [/(^|\.)dailymotion\.com$/i, u => /^\/video\//.test(u.pathname)],
+    [/(^|\.)twitch\.tv$/i, u => /\/(videos|clip)\//.test(u.pathname) || /^\/\w+\/clip\//.test(u.pathname)],
+    [/(^|\.)soundcloud\.com$/i, u => u.pathname.split("/").filter(Boolean).length >= 2],
+    [/(^|\.)reddit\.com$/i, u => /\/comments\//.test(u.pathname)],
+  ];
+  function isVideoUrl(href) {
+    try {
+      const u = new URL(href, location.href);
+      const rule = VIDEO_URL.find(([host]) => host.test(u.hostname));
+      return !!(rule && rule[1](u));
+    } catch (e) { return false; }
+  }
   const ICON = `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3.5v10m0 0-4-4m4 4 4-4M5 16.5v2a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-2" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
 
   let enabled = true;
@@ -108,21 +132,50 @@
   // ---------- ماذا نحمّل؟
   function isSite() { return SITES.test(location.hostname); }
 
+  // أي فيديو يقصده المستخدم؟ نبحث حول الفيديو نفسه وليس في الصفحة كلها
   function pageUrlFor(v) {
-    // في صفحة منشور واحد نستخدم رابط الصفحة؛ في الخلاصات نبحث عن رابط المنشور حول الفيديو
-    if (POST_PATH.test(location.pathname)) return location.href;
-    let el = v;
-    for (let i = 0; i < 10 && el; i++, el = el.parentElement) {
-      const a = el.querySelector && el.querySelector("a[href]");
-      const cand = [el.closest && el.closest("a[href]"), a].filter(Boolean);
-      for (const c of cand) {
-        try {
-          const u = new URL(c.href, location.href);
-          if (SITES.test(u.hostname) && POST_PATH.test(u.pathname)) return u.href;
-        } catch (e) { /* رابط غير صالح */ }
-      }
+    // 1) معرّف الفيديو على العنصر نفسه (فيسبوك يضعه أحياناً)
+    for (let el = v, i = 0; el && i < 25; el = el.parentElement, i++) {
+      const id = el.getAttribute && el.getAttribute("data-video-id");
+      if (id && /^\d{5,}$/.test(id) && /facebook\.com$/i.test(location.hostname)) return "https://www.facebook.com/watch/?v=" + id;
     }
+    // 2) في صفحة فيديو واحد، الفيديو الرئيسي (الأكبر) هو فيديو الصفحة
+    if (isVideoUrl(location.href) && isMainVideo(v)) return location.href;
+    // 3) أقرب رابط فيديو داخل منشور هذا الفيديو فقط
+    const near = nearestVideoLink(v);
+    if (near) return near;
     return location.href;
+  }
+
+  function area(el) { const r = el.getBoundingClientRect(); return r.width * r.height; }
+  function isMainVideo(v) {
+    const a = area(v);
+    for (const o of document.querySelectorAll("video")) if (o !== v && area(o) > a * 1.2) return false;
+    return true;
+  }
+
+  function nearestVideoLink(v) {
+    const vr = v.getBoundingClientRect();
+    const cx = vr.left + vr.width / 2, cy = vr.top + vr.height / 2;
+    const maxH = Math.max(vr.height * 3, 700);   // لا نصعد إلى حاوية تضم الخلاصة كلها
+    for (let el = v.parentElement, i = 0; el && i < 20; el = el.parentElement, i++) {
+      const own = el.closest("a[href]");
+      if (own && isVideoUrl(own.href)) return new URL(own.href, location.href).href;
+      const r = el.getBoundingClientRect();
+      if (r.height > maxH || el === document.body) break;
+      const post = el.getAttribute("role") === "article";
+      let best = null, bestD = Infinity;
+      for (const a of el.querySelectorAll("a[href]")) {
+        if (!isVideoUrl(a.href)) continue;
+        const ar = a.getBoundingClientRect();
+        if (ar.width < 2 || ar.height < 2 || getComputedStyle(a).visibility === "hidden") continue;   // روابط مخفية (شاشة نهاية يوتيوب)
+        const d = Math.hypot(ar.left + ar.width / 2 - cx, ar.top + ar.height / 2 - cy);
+        if (d < bestD) { bestD = d; best = a; }
+      }
+      if (best) return new URL(best.href, location.href).href;
+      if (post) break;   // نهاية منشور فيسبوك: لا نخرج منه إلى منشورات أخرى
+    }
+    return "";
   }
 
   function directSrc(v) {
