@@ -89,8 +89,17 @@ jobs:
       - name: Test silent install (no admin)
         shell: pwsh
         run: |
-          $p = Start-Process dist\PyDM-Setup.exe -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/SP-' -PassThru -Wait
+          # -Wait would also wait for PyDM.exe, which the installer starts at the end; wait for the installer only
+          $p = Start-Process dist\PyDM-Setup.exe -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/SP-' -PassThru
+          if (-not $p.WaitForExit(180000)) { throw "installer did not finish in 3 minutes" }
           if ($p.ExitCode -ne 0) { throw "installer exit code $($p.ExitCode)" }
+          $ok = $false
+          for ($i = 0; $i -lt 30; $i++) {
+            Start-Sleep -Seconds 1
+            try { if ((Invoke-WebRequest http://127.0.0.1:9614/ping -UseBasicParsing -TimeoutSec 2).Content -match '"ui": true') { $ok = $true; break } } catch {}
+          }
+          if (-not $ok) { throw "installed PyDM did not open after a silent install" }
+          Write-Host "Installed PyDM is running and its interface loaded"
           $exe = "$env:LOCALAPPDATA\Programs\PyDM\PyDM.exe"
           if (-not (Test-Path $exe)) { throw "not installed" }
           Get-ChildItem "$env:LOCALAPPDATA\Programs\PyDM" | Select-Object Name
