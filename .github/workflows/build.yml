@@ -46,7 +46,28 @@ jobs:
             $path = "$env:USERPROFILE\.pydm\$f"
             if (Test-Path $path) { Write-Host "===== $f"; Get-Content $path }
           }
-          if (-not $ok) { throw "PyDM.exe started but the interface did not load" }
+          if (-not $ok) {
+            Write-Host "===== .NET / application errors from the Windows event log"
+            Get-WinEvent -FilterHashtable @{LogName='Application'; StartTime=(Get-Date).AddMinutes(-5)} -ErrorAction SilentlyContinue |
+              Where-Object { $_.ProviderName -in '.NET Runtime','Application Error' } |
+              Select-Object -First 3 | ForEach-Object { $_.Message }
+            Write-Host "===== bundled webview / pythonnet files"
+            Get-ChildItem dist\PyDM\lib -Recurse -Include *.dll | Where-Object { $_.FullName -match 'webview|pythonnet|clr' } | ForEach-Object { $_.FullName.Replace((Resolve-Path dist\PyDM).Path, '') }
+            Write-Host "===== same code from source (not frozen)"
+            Remove-Item "$env:USERPROFILE\.pydm\startup.log" -ErrorAction SilentlyContinue
+            $q = Start-Process python -ArgumentList 'pydm.py' -PassThru -RedirectStandardError src_err.txt -RedirectStandardOutput src_out.txt
+            $src = $false
+            for ($i = 0; $i -lt 25; $i++) {
+              Start-Sleep -Seconds 1
+              if ($q.HasExited) { Write-Host "source run exited with code $($q.ExitCode)"; break }
+              try { $r = Invoke-WebRequest http://127.0.0.1:9614/ping -UseBasicParsing -TimeoutSec 2; if ($r.Content -match '"ui": true') { $src = $true; break } } catch {}
+            }
+            Stop-Process -Id $q.Id -Force -ErrorAction SilentlyContinue
+            Write-Host "source run interface loaded: $src"
+            Get-Content "$env:USERPROFILE\.pydm\startup.log" -ErrorAction SilentlyContinue
+            Get-Content src_err.txt -ErrorAction SilentlyContinue | Select-Object -Last 30
+            throw "PyDM.exe started but the interface did not load"
+          }
 
       - name: Download yt-dlp and ffmpeg
         shell: pwsh
