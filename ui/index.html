@@ -121,6 +121,9 @@ header {
   padding: 6px 8px; font: inherit; font-size: 13px;
 }
 .quality { display: none; border: 0; }
+.pl { display: none; align-items: center; gap: 6px; font-size: 13px; color: var(--muted); white-space: nowrap; cursor: pointer; }
+.pl.show { display: flex; }
+.pl input { width: 16px; height: 16px; accent-color: var(--cyan); }
 .quality.show { display: block; }
 .go {
   border: 0; border-radius: 9px; padding: 9px 18px; font-weight: 600; color: #fff;
@@ -300,6 +303,7 @@ dialog form { max-height: 86vh; overflow-y: auto; }
       <button type="button" data-mode="video" aria-pressed="true">فيديو</button>
       <button type="button" data-mode="audio" aria-pressed="false">صوت MP3</button>
     </div>
+    <label class="pl" id="pl-wrap"><input type="checkbox" id="pl"> القائمة كاملة</label>
     <select class="quality" id="quality" aria-label="جودة الفيديو">
       <option value="best">أفضل جودة</option>
       <option value="1080">1080p</option>
@@ -447,7 +451,7 @@ function match(r, f) {
 }
 function toast(msg) {
   const t = $("#toast"); t.textContent = msg; t.classList.add("show");
-  clearTimeout(toast.t); toast.t = setTimeout(() => t.classList.remove("show"), 2200);
+  clearTimeout(toast.t); toast.t = setTimeout(() => t.classList.remove("show"), msg.length > 40 ? 5000 : 2200);
 }
 function icon(id) { return `<svg class="i"><use href="#${id}"/></svg>`; }
 
@@ -577,7 +581,7 @@ async function call(fn, ...args) {
 }
 async function refresh() {
   const s = await call("state");
-  if (s) { state = s; render(); }
+  if (s) { state = s; render(); if (s.notice) toast(s.notice); }
 }
 
 // ---------- إضافة رابط
@@ -586,8 +590,12 @@ async function onUrl() {
   const v = urlIn.value.trim();
   go.disabled = !/https?:\/\//i.test(v);
   const kind = v ? await call("detect", v.split(/\s+/)[0]) : "";
-  modeBox.classList.toggle("show", kind === "site");
-  isSite = kind === "site";
+  modeBox.classList.toggle("show", kind === "site" || kind === "playlist");
+  isSite = kind === "site" || kind === "playlist";
+  const wasPl = $("#pl-wrap").classList.contains("show");
+  $("#pl-wrap").classList.toggle("show", kind === "playlist");
+  if (kind === "playlist" && !wasPl) $("#pl").checked = /\/(playlist|sets|album)/i.test(v);   // رابط القائمة نفسها: الكل افتراضياً
+  if (kind !== "playlist") $("#pl").checked = false;
   showQuality();
 }
 let isSite = false;
@@ -602,9 +610,10 @@ modeBox.addEventListener("click", e => {
 });
 $("#add-form").addEventListener("submit", async e => {
   e.preventDefault();
-  const n = await call("add", urlIn.value, mode, qualitySel.value);
+  const whole = $("#pl").checked;
+  const n = await call("add", urlIn.value, mode, qualitySel.value, whole);
   if (n) {
-    toast(n === 1 ? "بدأ التحميل" : "بدأ تحميل " + n + " ملفات");
+    if (!whole) toast(n === 1 ? "بدأ التحميل" : "بدأ تحميل " + n + " ملفات");
     urlIn.value = ""; onUrl();
     if (filter !== "all" && filter !== "active") setFilter("all");
     refresh();

@@ -42,12 +42,15 @@ const SITES = /^https?:\/\/([^/]+\.)?(youtube\.com|youtu\.be|facebook\.com|fb\.w
 function setupSite(tab) {
   if (!tab.url || !SITES.test(tab.url)) return;
   $("site").style.display = "block";
-  for (const [id, mode] of [["site-v", "video"], ["site-a", "audio"]]) {
+  let isPl = false;
+  try { const u = new URL(tab.url), l = u.searchParams.get("list") || ""; isPl = (l && !l.startsWith("RD")) || /\/(playlist|sets|albums?)(\/|$)/i.test(u.pathname); } catch (e) {}
+  if (isPl) $("site-pl").style.display = "flex";
+  for (const [id, mode, playlist] of [["site-v", "video", false], ["site-a", "audio", false], ["site-plv", "video", true], ["site-pla", "audio", true]]) {
     $(id).addEventListener("click", async () => {
       const b = $(id);
       b.disabled = true;
       const res = await chrome.runtime.sendMessage({
-        type: "send", url: tab.url, kind: "ytdlp", mode, title: tab.title || "", referer: ""
+        type: "send", url: tab.url, kind: "ytdlp", mode, playlist, title: playlist ? "" : (tab.title || ""), referer: ""
       }).catch(() => null);
       b.textContent = res && res.ok ? "تم ✔" : "افتح PyDM";
       if (!(res && res.ok)) b.disabled = false;

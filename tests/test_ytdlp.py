@@ -26,7 +26,7 @@ URL = "https://www.youtube.com/watch?v=abc"
 pydm.find_ffmpeg = lambda: "/usr/bin/ffmpeg"
 d = pydm.YtdlpDownload(URL, out, HDR, 4, "T"); d.start(); st = wait(d)
 a = last_call()
-check("video ok", st == "done" and os.path.isfile(d.path) and d.name == "عنوان الفيديو.mp4" and d.percent() == 100, f"{st} {d.error} {d.name}")
+check("video ok", st == "done" and os.path.isfile(d.path) and d.name == "عنوان abc.mp4" and d.percent() == 100, f"{st} {d.error} {d.name}")
 check("output template escapes % in folder", any("dl 100%%" in x for x in a))
 check("no browser UA/cookies/referer sent to yt-dlp for youtube", "--user-agent" not in a and not any("Cookie" in x for x in a) and "--referer" not in a and "--add-header" not in a, a)
 check("js runtime passed", "--js-runtimes" in a and a[a.index("--js-runtimes")+1].startswith("deno:"), a)
@@ -108,7 +108,7 @@ def post(body):
     return c.getresponse().status
 check("handler ytdlp meta", post({"url": URL, "kind": "ytdlp", "mode": "audio", "title": "ع"}) == 200)
 u, h, m = pydm.incoming.get(timeout=2)
-check("meta mode/kind", m == {"kind": "ytdlp", "mode": "audio", "quality": "best", "title": "ع", "cookies": []}, str(m))
+check("meta mode/kind", m == {"kind": "ytdlp", "mode": "audio", "quality": "best", "playlist": False, "title": "ع", "cookies": []}, str(m))
 post({"url": URL, "kind": "weird"}); u, h, m = pydm.incoming.get(timeout=2)
 check("unknown kind sanitized", m["kind"] == "" and m["mode"] == "video")
 

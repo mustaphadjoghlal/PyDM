@@ -255,6 +255,51 @@ def is_ytdlp_url(url):
     return not re.search(r"\.(mp4|webm|m4a|mp3|jpe?g|png|gif|m3u8|mpd)$", p.path, re.I)
 
 
+def is_playlist_url(url):
+    """رابط قائمة تشغيل: /playlist?list=... أو فيديو داخل قائمة (watch?v=..&list=..)."""
+    p = urllib.parse.urlparse(url)
+    if not YTDLP_HOSTS.search(p.hostname or ""):
+        return False
+    q = urllib.parse.parse_qs(p.query)
+    lst = (q.get("list") or [""])[0]
+    if lst and not lst.startswith("RD"):     # RD = "ميكس" لا نهائي يولّده يوتيوب، ليس قائمة حقيقية
+        return True
+    return bool(re.search(r"/(playlist|sets|albums?)(/|$)", p.path, re.I))
+
+
+PLAYLIST_MAX = 500
+
+
+def list_playlist(url):
+    """يقرأ عناصر القائمة عبر yt-dlp بلا تحميل. يعيد (عنوان القائمة، [(رابط، عنوان)])."""
+    exe = find_ytdlp()
+    if not exe:
+        raise IOError("يحتاج yt-dlp: ضع yt-dlp.exe بجانب PyDM.exe")
+    update_ytdlp_once()
+    cmd = exe + ["--flat-playlist", "--yes-playlist", "--no-warnings", "--no-colors",
+                 "--playlist-end", str(PLAYLIST_MAX),
+                 "--print", "%(playlist_title)s\t%(url)s\t%(title)s", url]
+    env = dict(os.environ, PYTHONIOENCODING="utf-8", PYTHONUTF8="1")
+    r = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, stdin=subprocess.DEVNULL,
+                       creationflags=NOWIN, env=env, timeout=180)
+    out = r.stdout.decode("utf-8", "replace")
+    title, items, seen = "", [], set()
+    for line in out.splitlines():
+        parts = line.rstrip("\r").split("\t")
+        if len(parts) < 3 or not parts[1].startswith("http"):
+            continue
+        name = parts[2].strip()
+        if name in ("[Private video]", "[Deleted video]") or parts[1] in seen:
+            continue
+        seen.add(parts[1])
+        title = title or ("" if parts[0] in ("NA", "") else parts[0])
+        items.append((parts[1], "" if name == "NA" else name))
+    if not items:
+        err = [l for l in r.stderr.decode("utf-8", "replace").splitlines() if l.startswith("ERROR")]
+        raise IOError(err[-1][6:].strip()[:160] if err else "لم أجد فيديوهات في هذه القائمة")
+    return title, items
+
+
 class _Redirect(urllib.request.HTTPRedirectHandler):
     """لا نرسل الكوكيز إلى نطاق مختلف عند إعادة التوجيه."""
 
@@ -922,6 +967,7 @@ class YtdlpDownload(Download):
         self.title = title
         self.media = "audio" if media == "audio" else "video"
         self.quality = "best"     # best | 2160 | 1440 | 1080 | 720 | 480 | 360
+        self.prefix = ""          # ترقيم عناصر القائمة: "01 - "
         self.bytes_done = 0
         self.proc = None
         self.cookies = []      # من المتصفح، في الذاكرة فقط (لا تُحفظ على القرص)
@@ -930,7 +976,7 @@ class YtdlpDownload(Download):
 
     def to_dict(self):
         d = super().to_dict()
-        d.update(kind="ytdlp", title=self.title, media=self.media, quality=self.quality)
+        d.update(kind="ytdlp", title=self.title, media=self.media, quality=self.quality, prefix=self.prefix)
         return d
 
     @classmethod
@@ -939,6 +985,7 @@ class YtdlpDownload(Download):
         o.title = d.get("title", "")
         o.media = "audio" if d.get("media") == "audio" else "video"
         o.quality = d.get("quality") if d.get("quality") in QUALITIES else "best"
+        o.prefix = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "", str(d.get("prefix") or ""))[:12]
         if o.status == "done":
             o.bytes_done = o.total
         return o
@@ -1021,7 +1068,8 @@ class YtdlpDownload(Download):
         if not exe:
             raise IOError("يحتاج yt-dlp: ضع yt-dlp.exe بجانب PyDM.exe")
         ff = find_ffmpeg()
-        tpl = os.path.join(self.folder.replace("%", "%%"), "%(title).150B.%(ext)s")
+        tpl = os.path.join(self.folder.replace("%", "%%"),
+                           self.prefix.replace("%", "%%") + "%(title).150B.%(ext)s")
         cmd = exe + ["--no-playlist", "--newline", "--no-colors", "--progress",
                      "--progress-template", self.TEMPLATE,
                      "--print", "after_move:PYDMFILE %(filepath)s", "-o", tpl]
@@ -1175,6 +1223,7 @@ class Handler(BaseHTTPRequestHandler):
             meta = {"kind": kind if kind in ("stream", "ytdlp") else "",
                     "mode": "audio" if data.get("mode") == "audio" else "video",
                     "quality": data.get("quality") if data.get("quality") in QUALITIES else "best",
+                    "playlist": bool(data.get("playlist")),
                     "title": str(data.get("title", ""))[:200]}
             cookies = []
             for c in (data.get("cookies") or [])[:300]:
@@ -1352,6 +1401,7 @@ class Manager:
         self.cfg["when_done"] = "none"           # لا يُحفظ بين التشغيلات (مثل IDM)
         LIMITER.set(self.cfg["speed_limit"])
         self._was_active = False
+        self.notice = ""                         # رسالة قصيرة تعرضها الواجهة مرة واحدة
         self.items = []
         self.notifier = None                  # يُعيَّن عند فتح النافذة
         self._last_status = {}
@@ -1372,8 +1422,34 @@ class Manager:
         self.items.append(d)
         return d
 
+    def add_playlist(self, url, headers=None, meta=None):
+        """يقرأ القائمة في الخلفية ثم يضيف كل فيديو إلى الطابور داخل مجلد باسم القائمة."""
+        meta = dict(meta or {})
+        meta.pop("playlist", None)
+
+        def work():
+            try:
+                title, items = list_playlist(url)
+            except Exception as e:
+                self.notice = "تعذّرت قراءة القائمة: " + str(e)[:140]
+                return
+            sub = safe_name(title) or "Playlist"
+            width = max(2, len(str(len(items))))
+            for i, (u, name) in enumerate(items, 1):
+                m = dict(meta, kind="ytdlp", title=name, subfolder=sub, prefix=f"{i:0{width}d} - ")
+                self.add(u, headers, m)
+            self.notice = f"أُضيف {len(items)} فيديو من القائمة: {title or sub}"
+
+        self.notice = "جارٍ قراءة القائمة..."
+        t = threading.Thread(target=work, daemon=True)
+        t.start()
+        return t
+
     def add(self, url, headers=None, meta=None):
         meta = meta or {}
+        if meta.get("playlist") and is_ytdlp_url(url):
+            self.add_playlist(url, headers, meta)
+            return None
         conns = int(self.cfg.get("conns", 8))
         folder = self.cfg["folder"]
         cats = bool(self.cfg.get("categories", True))
@@ -1382,7 +1458,10 @@ class Manager:
             media = meta.get("mode", "video")
             if cats:
                 folder = os.path.join(folder, CATEGORY_DIRS["audio" if media == "audio" else "video"])
+            if meta.get("subfolder"):
+                folder = os.path.join(folder, safe_name(meta["subfolder"]))
             d = YtdlpDownload(url, folder, headers, conns, meta.get("title", ""), media)
+            d.prefix = meta.get("prefix", "")
             d.cookies = meta.get("cookies") or []
             d.compat = bool(self.cfg.get("compat", True))
             d.quality = meta.get("quality") if meta.get("quality") in QUALITIES else "best"
@@ -1527,7 +1606,9 @@ class Manager:
         with self.lock:
             items = list(self.items)
         rows = [self.row(d) for d in reversed(items)]
+        notice, self.notice = self.notice, ""
         return {
+            "notice": notice,
             "items": rows,
             "speed": sum(r["speed"] for r in rows),
             "settings": {"folder": self.cfg["folder"], "conns": int(self.cfg.get("conns", 8)),
@@ -1583,17 +1664,20 @@ class Api:
 
     def detect(self, url):
         url = (url or "").strip()
+        if is_playlist_url(url):
+            return "playlist"
         if is_ytdlp_url(url):
             return "site"
         if is_stream_url(url):
             return "stream"
         return "file" if url.startswith(("http://", "https://")) else ""
 
-    def add(self, text, mode="video", quality="best"):
+    def add(self, text, mode="video", quality="best", playlist=False):
         urls = re.findall(r"https?://[^\s\"'<>]+", text or "")
         for url in urls:
             self._mgr.add(url, None, {"mode": "audio" if mode == "audio" else "video",
-                                      "quality": quality if quality in QUALITIES else "best"})
+                                      "quality": quality if quality in QUALITIES else "best",
+                                      "playlist": bool(playlist) and is_playlist_url(url)})
         return len(urls)
 
     def _with(self, uid, fn):

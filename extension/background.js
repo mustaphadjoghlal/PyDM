@@ -31,6 +31,7 @@ async function handoff(url, referrer, meta) {
   if (meta && meta.kind) body.kind = meta.kind;
   if (meta && meta.mode) body.mode = meta.mode;
   if (meta && meta.quality) body.quality = meta.quality;
+  if (meta && meta.playlist) body.playlist = true;
   if (meta && meta.title) body.title = meta.title;
   if (meta && meta.kind === "ytdlp") {
     // فيسبوك وإنستغرام يحتاجان تسجيل الدخول: نرسل كوكيز الموقع ليكتبها PyDM في ملف لـ yt-dlp
@@ -225,7 +226,7 @@ chrome.runtime.onMessage.addListener((msg, sender, reply) => {
   }
   if (msg && msg.type === "send") {
     const kind = msg.kind === "stream" || msg.kind === "ytdlp" ? msg.kind : "";
-    handoff(msg.url, msg.referer, { kind, title: msg.title, mode: msg.mode === "audio" ? "audio" : "video", quality: msg.quality })
+    handoff(msg.url, msg.referer, { kind, title: msg.title, mode: msg.mode === "audio" ? "audio" : "video", quality: msg.quality, playlist: !!msg.playlist })
       .then(ok => reply({ ok }))
       .catch(() => reply({ ok: false }));
     return true;   // رد غير متزامن

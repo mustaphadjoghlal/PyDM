@@ -2,6 +2,15 @@
 import sys, os, time, json
 args = sys.argv[1:]
 open(os.environ["FAKE_LOG"], "a").write(json.dumps(args) + "\n")
+if "--flat-playlist" in args:
+    if os.environ.get("FAKE_PL") == "empty":
+        sys.stderr.write("ERROR: [youtube:tab] PLx: The playlist does not exist.\n"); sys.exit(1)
+    rows = [("قائمة: دروس/المونتاج", "https://www.youtube.com/watch?v=aaa", "الدرس الأول"),
+            ("قائمة: دروس/المونتاج", "https://www.youtube.com/watch?v=bbb", "[Private video]"),
+            ("قائمة: دروس/المونتاج", "https://www.youtube.com/watch?v=ccc", "الدرس الثاني"),
+            ("قائمة: دروس/المونتاج", "https://www.youtube.com/watch?v=aaa", "الدرس الأول"),
+            ("قائمة: دروس/المونتاج", "https://www.youtube.com/watch?v=ddd", "Lesson 3")]
+    sys.stdout.buffer.write("".join("\t".join(r) + "\n" for r in rows).encode("utf-8")); sys.exit(0)
 out = args[args.index("-o") + 1].replace("%%", "%")
 mode = os.environ.get("FAKE_MODE", "ok")
 if "--cookies" in args and os.environ.get("FAKE_COPY_COOKIES"):
@@ -9,7 +18,7 @@ if "--cookies" in args and os.environ.get("FAKE_COPY_COOKIES"):
 url = args[-1]
 audio = "-x" in args
 ext = "mp3" if audio else "mp4"
-path = out.replace("%(title).150B", "عنوان الفيديو").replace("%(ext)s", ext)
+path = out.replace("%(title).150B", "عنوان " + url.split("=")[-1]).replace("%(ext)s", ext)
 if mode == "fail":
     print("[youtube] abc: Downloading webpage", flush=True)
     print("ERROR: [youtube] abc: Video unavailable", flush=True)

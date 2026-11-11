@@ -178,6 +178,13 @@
     return "";
   }
 
+  function isPlaylistUrl(href) {
+    try {
+      const u = new URL(href, location.href), l = u.searchParams.get("list") || "";
+      return (l && !l.startsWith("RD")) || /\/(playlist|sets|albums?)(\/|$)/i.test(u.pathname);
+    } catch (e) { return false; }
+  }
+
   function directSrc(v) {
     const s = v.currentSrc || v.src || (v.querySelector("source[src]") || {}).src || "";
     return /^https?:/i.test(s) ? s : "";
@@ -210,7 +217,8 @@
       try { chrome.storage.local.set({ quality: prefQuality }); } catch (e) { /* لا بأس */ }
     }
     const msg = { type: "send", url: action.url, kind: action.kind || "", mode: action.mode || "video",
-                  quality: action.quality || "best", title: document.title, referer: location.href };
+                  quality: action.quality || "best", playlist: !!action.playlist,
+                  title: action.playlist ? "" : document.title, referer: location.href };
     try {
       chrome.runtime.sendMessage(msg, r => {
         busy = false;
@@ -252,6 +260,11 @@
       for (const [q, label] of [["best", "أفضل جودة"], ["1080", "1080p"], ["720", "720p"], ["480", "480p"], ["360", "360p"]])
         addItem(label + (q === prefQuality ? "  ✓" : ""), "MP4", { url: u, kind: "ytdlp", mode: "video", quality: q, remember: true });
       addItem("صوت فقط", "MP3", { url: u, kind: "ytdlp", mode: "audio" });
+      if (isPlaylistUrl(u)) {
+        addLabel("قائمة التشغيل كاملة");
+        addItem("كل فيديوهات القائمة", prefQuality === "best" ? "MP4" : prefQuality + "p", { url: u, kind: "ytdlp", mode: "video", quality: prefQuality, playlist: true });
+        addItem("كل القائمة صوتاً", "MP3", { url: u, kind: "ytdlp", mode: "audio", playlist: true });
+      }
     } else {
       const src = v && directSrc(v);
       const list = (await detected()).slice().reverse();
