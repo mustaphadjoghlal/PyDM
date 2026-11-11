@@ -32,8 +32,8 @@
   }
   const ICON = `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3.5v10m0 0-4-4m4 4 4-4M5 16.5v2a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-2" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
 
-  let enabled = true;
-  chrome.storage.local.get("floatBtn", r => { enabled = r.floatBtn !== false; });
+  let enabled = true, prefQuality = "best";
+  chrome.storage.local.get(["floatBtn", "quality"], r => { enabled = r.floatBtn !== false; if (r.quality) prefQuality = r.quality; });
   chrome.storage.onChanged.addListener(ch => {
     if (ch.floatBtn) { enabled = ch.floatBtn.newValue !== false; if (!enabled) hide(true); }
   });
@@ -191,7 +191,7 @@
   }
 
   async function bestAction(v) {
-    if (isSite()) return { url: pageUrlFor(v), kind: "ytdlp", mode: "video" };
+    if (isSite()) return { url: pageUrlFor(v), kind: "ytdlp", mode: "video", quality: prefQuality };
     const list = await detected();
     const stream = list.filter(x => x.kind === "stream").pop();
     if (stream) return { url: stream.url, kind: "stream" };
@@ -205,8 +205,12 @@
   function send(action) {
     busy = true;
     setLabel("...");
+    if (action.remember && action.quality) {      // الجودة المختارة تصير افتراضية للنقرة الواحدة
+      prefQuality = action.quality;
+      try { chrome.storage.local.set({ quality: prefQuality }); } catch (e) { /* لا بأس */ }
+    }
     const msg = { type: "send", url: action.url, kind: action.kind || "", mode: action.mode || "video",
-                  title: document.title, referer: location.href };
+                  quality: action.quality || "best", title: document.title, referer: location.href };
     try {
       chrome.runtime.sendMessage(msg, r => {
         busy = false;
@@ -245,7 +249,8 @@
     const v = target;
     if (isSite()) {
       const u = pageUrlFor(v);
-      addItem("فيديو بأفضل جودة", "MP4", { url: u, kind: "ytdlp", mode: "video" });
+      for (const [q, label] of [["best", "أفضل جودة"], ["1080", "1080p"], ["720", "720p"], ["480", "480p"], ["360", "360p"]])
+        addItem(label + (q === prefQuality ? "  ✓" : ""), "MP4", { url: u, kind: "ytdlp", mode: "video", quality: q, remember: true });
       addItem("صوت فقط", "MP3", { url: u, kind: "ytdlp", mode: "audio" });
     } else {
       const src = v && directSrc(v);

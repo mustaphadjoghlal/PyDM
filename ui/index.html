@@ -116,6 +116,12 @@ header {
 .mode.show { display: flex; }
 .mode button { border: 0; background: none; padding: 5px 10px; border-radius: 6px; color: var(--muted); font-size: 13px; }
 .mode button[aria-pressed="true"] { background: var(--panel); color: var(--text); box-shadow: 0 1px 3px rgba(0,0,0,.2); }
+.quality, .select {
+  background: var(--raise); color: var(--text); border: 1px solid var(--line); border-radius: 8px;
+  padding: 6px 8px; font: inherit; font-size: 13px;
+}
+.quality { display: none; border: 0; }
+.quality.show { display: block; }
 .go {
   border: 0; border-radius: 9px; padding: 9px 18px; font-weight: 600; color: #fff;
   background: linear-gradient(90deg, var(--blue), var(--cyan));
@@ -248,6 +254,8 @@ dialog h2 { margin: 0; font-size: 17px; font-weight: 600; }
 .check { display: flex; align-items: center; gap: 10px; }
 .check input { width: 18px; height: 18px; accent-color: var(--cyan); }
 .note { font-size: 12.5px; color: var(--muted); margin: -8px 0 0; }
+.two { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+dialog form { max-height: 86vh; overflow-y: auto; }
 .dlg-foot { display: flex; justify-content: flex-start; }
 
 .toast {
@@ -292,6 +300,13 @@ dialog h2 { margin: 0; font-size: 17px; font-weight: 600; }
       <button type="button" data-mode="video" aria-pressed="true">فيديو</button>
       <button type="button" data-mode="audio" aria-pressed="false">صوت MP3</button>
     </div>
+    <select class="quality" id="quality" aria-label="جودة الفيديو">
+      <option value="best">أفضل جودة</option>
+      <option value="1080">1080p</option>
+      <option value="720">720p</option>
+      <option value="480">480p</option>
+      <option value="360">360p</option>
+    </select>
     <button class="go" id="go" type="submit" disabled>تحميل</button>
   </form>
   <button class="icon-btn" id="paste" title="لصق من الحافظة" aria-label="لصق من الحافظة"><svg class="i"><use href="#i-paste"/></svg></button>
@@ -318,6 +333,7 @@ dialog h2 { margin: 0; font-size: 17px; font-weight: 600; }
 <footer>
   <span id="total" class="idle"><span class="lines"><i></i><i></i><i></i></span><span class="num" id="total-speed">0 B/s</span></span>
   <span id="active-count"></span>
+  <span id="limit-note"></span>
   <button class="folder" id="folder" title="فتح مجلد التحميل"><svg class="i"><use href="#i-folder"/></svg><span id="folder-path"></span></button>
 </footer>
 
@@ -331,11 +347,45 @@ dialog h2 { margin: 0; font-size: 17px; font-weight: 600; }
       <div class="range"><input type="range" id="set-conns" min="1" max="16" step="1"><output id="conns-out" class="num"></output></div>
     </label>
     <p class="note">اتصالات أكثر تعني سرعة أعلى، لكن بعض المواقع تحدّها.</p>
+    <label class="field"><span>تحميلات في الوقت نفسه (الباقي ينتظر دوره)</span>
+      <div class="range"><input type="range" id="set-parallel" min="1" max="10" step="1"><output id="parallel-out" class="num"></output></div>
+    </label>
+    <div class="two">
+      <label class="field"><span>حد السرعة</span>
+        <select class="select" id="set-limit">
+          <option value="0">بلا حد</option>
+          <option value="262144">256 KB/s</option>
+          <option value="524288">512 KB/s</option>
+          <option value="1048576">1 MB/s</option>
+          <option value="2097152">2 MB/s</option>
+          <option value="5242880">5 MB/s</option>
+          <option value="10485760">10 MB/s</option>
+        </select>
+      </label>
+      <label class="field"><span>عند انتهاء كل التحميلات</span>
+        <select class="select" id="set-done">
+          <option value="none">لا شيء</option>
+          <option value="sleep">سكون الجهاز</option>
+          <option value="shutdown">إيقاف تشغيل الجهاز</option>
+        </select>
+      </label>
+    </div>
+    <label class="check"><input type="checkbox" id="set-cats"> فرز الملفات في مجلدات: Video و Music و Compressed و Programs و Documents</label>
     <label class="check"><input type="checkbox" id="set-compat"> فيديو متوافق مع البريمير وبرامج المونتاج (H.264)</label>
     <p class="note">يوتيوب يعطي H.264 حتى 1080p. أطفئه لأعلى جودة متاحة (4K) بترميزات لا يقبلها البريمير.</p>
     <label class="check"><input type="checkbox" id="set-notify"> إشعار عند بدء التحميل وانتهائه</label>
     <label class="check"><input type="checkbox" id="set-startup"> تشغيل PyDM مع بدء الويندوز</label>
     <div class="dlg-foot"><button class="go" value="close">تم</button></div>
+  </form>
+</dialog>
+
+<dialog id="refresh">
+  <form id="refresh-form">
+    <h2>تحديث الرابط</h2>
+    <p class="note" style="margin:0">افتح صفحة الملف من جديد وانسخ رابط التحميل، ثم الصقه هنا. يكمل PyDM من حيث توقف.</p>
+    <div class="name" id="refresh-name" style="font-weight:600"></div>
+    <input type="text" id="refresh-url" class="select" style="direction:ltr;text-align:left;width:100%" placeholder="https://" aria-label="الرابط الجديد">
+    <div class="dlg-foot" style="gap:8px"><button class="go" type="submit">استئناف</button><button class="btn" type="button" id="refresh-cancel">إلغاء</button></div>
   </form>
 </dialog>
 
@@ -414,6 +464,7 @@ function makeRow(r) {
   el.addEventListener("click", e => {
     const b = e.target.closest("button[data-act]"); if (!b) return;
     const id = el.dataset.id, act = b.dataset.act;
+    if (act === "refresh") { openRefresh(id); return; }
     if (act === "remove") { el.style.opacity = ".4"; }
     call(act, id).then(() => refresh());
   });
@@ -425,6 +476,7 @@ function actionsFor(r) {
   if (r.status === "downloading" || r.status === "queued") a.push(["pause", "i-pause", "إيقاف مؤقت"]);
   if (r.status === "paused") a.push(["resume", "i-play", "استئناف"]);
   if (r.status === "error") a.push(["resume", "i-retry", "إعادة المحاولة"]);
+  if (r.status === "paused" || r.status === "error") a.push(["refresh", "i-link", "تحديث الرابط (إن انتهت صلاحيته)"]);
   if (r.status === "done") a.push(["open_file", "i-open", "فتح الملف"]);
   if (r.path) a.push(["open_folder", "i-folder", "فتح المجلد"]);
   a.push(["remove", "i-x", r.status === "done" ? "إزالة من القائمة" : "إلغاء وإزالة", "danger"]);
@@ -443,12 +495,12 @@ function updateRow(el, r) {
     nm.dataset.n = r.name; nm.title = r.url; nm.textContent = "";
     // الاسم في عزل اتجاهي مستقل والامتداد منفصل، حتى لا يصير "3.mp4" إلى "mp4.3" في الأسماء العربية
     nm.dir = /[\u0590-\u08FF]/.test(r.name) ? "rtl" : "ltr";
-    const m = r.name.match(/^(.*?)(\S*\.[A-Za-z0-9]{1,5})$/);
+    const m = r.name.match(/^(.*?)([^\s\u0590-\u08FF]*\.[A-Za-z0-9]{1,5})$/);
     const base = document.createElement("bdi"); base.textContent = m ? m[1] : r.name; nm.appendChild(base);
     if (m) { const ext = document.createElement("bdi"); ext.className = "ext"; ext.dir = "ltr"; ext.textContent = m[2]; nm.appendChild(ext); }
   }
 
-  const parts = [`<span class="st" data-s="${r.status}">${STATUS[r.status] || r.status}</span>`];
+  const parts = [`<span class="st" data-s="${r.status}">${r.waiting ? "ينتظر دوره" : (STATUS[r.status] || r.status)}</span>`];
   if (r.status === "error" && r.error) parts.push(`<span class="err"></span>`);
   else {
     if (r.total) parts.push(`<span class="num">${r.status === "done" ? size(r.total) : size(r.done) + " / " + size(r.total)}</span>`);
@@ -510,6 +562,8 @@ function render() {
   $("#total").classList.toggle("idle", !state.speed);
   $("#active-count").textContent = active ? (active === 1 ? "تحميل واحد جارٍ" : active + " تحميلات جارية") : "لا تحميلات جارية";
   $("#folder-path").textContent = state.settings.folder;
+  const lim = state.settings.speed_limit;
+  $("#limit-note").innerHTML = lim ? `حد السرعة <span class="num">${size(lim)}/s</span>` : "";
 
   const t = state.tools;
   $("#tools").innerHTML =
@@ -533,16 +587,22 @@ async function onUrl() {
   go.disabled = !/https?:\/\//i.test(v);
   const kind = v ? await call("detect", v.split(/\s+/)[0]) : "";
   modeBox.classList.toggle("show", kind === "site");
+  isSite = kind === "site";
+  showQuality();
 }
+let isSite = false;
+const qualitySel = $("#quality");
+function showQuality() { qualitySel.classList.toggle("show", isSite && mode === "video"); }
 urlIn.addEventListener("input", onUrl);
 modeBox.addEventListener("click", e => {
   const b = e.target.closest("button[data-mode]"); if (!b) return;
   mode = b.dataset.mode;
   modeBox.querySelectorAll("button").forEach(x => x.setAttribute("aria-pressed", x === b));
+  showQuality();
 });
 $("#add-form").addEventListener("submit", async e => {
   e.preventDefault();
-  const n = await call("add", urlIn.value, mode);
+  const n = await call("add", urlIn.value, mode, qualitySel.value);
   if (n) {
     toast(n === 1 ? "بدأ التحميل" : "بدأ تحميل " + n + " ملفات");
     urlIn.value = ""; onUrl();
@@ -579,6 +639,12 @@ $("#open-settings").addEventListener("click", () => {
   $("#set-folder").textContent = s.folder;
   $("#set-conns").value = s.conns; $("#conns-out").textContent = s.conns;
   $("#set-startup").checked = s.startup;
+  $("#set-parallel").value = s.max_parallel; $("#parallel-out").textContent = s.max_parallel;
+  const lim = $("#set-limit");
+  if (![...lim.options].some(o => +o.value === s.speed_limit)) lim.add(new Option((s.speed_limit / 1048576).toFixed(1) + " MB/s", s.speed_limit));
+  lim.value = s.speed_limit;
+  $("#set-done").value = s.when_done;
+  $("#set-cats").checked = s.categories;
   $("#set-compat").checked = s.compat;
   $("#set-notify").checked = s.notify;
   dlg.showModal();
@@ -588,8 +654,34 @@ $("#pick-folder").addEventListener("click", async () => {
 });
 $("#set-conns").addEventListener("input", e => $("#conns-out").textContent = e.target.value);
 $("#set-conns").addEventListener("change", e => call("set_conns", +e.target.value).then(refresh));
-for (const [id, key] of [["#set-compat", "compat"], ["#set-notify", "notify"]])
+for (const [id, key] of [["#set-compat", "compat"], ["#set-notify", "notify"], ["#set-cats", "categories"]])
   $(id).addEventListener("change", e => call("set_option", key, e.target.checked).then(refresh));
+$("#set-parallel").addEventListener("input", e => $("#parallel-out").textContent = e.target.value);
+$("#set-parallel").addEventListener("change", e => call("set_option", "max_parallel", +e.target.value).then(refresh));
+$("#set-limit").addEventListener("change", e => call("set_option", "speed_limit", +e.target.value).then(refresh));
+$("#set-done").addEventListener("change", async e => {
+  await call("set_option", "when_done", e.target.value); refresh();
+  if (e.target.value === "shutdown") toast("سيُطفأ الجهاز بعد دقيقة من انتهاء التحميلات");
+});
+
+// ---------- تحديث رابط منتهي الصلاحية
+const rdlg = $("#refresh");
+async function openRefresh(id) {
+  rdlg.dataset.id = id;
+  const r = rows.get(id);
+  $("#refresh-name").textContent = r ? r.name : "";
+  const clip = await call("clipboard");
+  $("#refresh-url").value = clip || "";
+  rdlg.showModal();
+  $("#refresh-url").select();
+}
+$("#refresh-form").addEventListener("submit", async e => {
+  e.preventDefault();
+  const ok = await call("refresh_link", rdlg.dataset.id, $("#refresh-url").value);
+  if (ok) { rdlg.close(); toast("يُستأنف التحميل بالرابط الجديد"); refresh(); }
+  else toast("الرابط غير صالح");
+});
+$("#refresh-cancel").addEventListener("click", () => rdlg.close());
 $("#set-startup").addEventListener("change", async e => {
   const ok = await call("set_startup", e.target.checked);
   if (!ok) { e.target.checked = !e.target.checked; toast("تعذّر تغيير التشغيل مع الويندوز"); } else refresh();

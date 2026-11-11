@@ -58,7 +58,7 @@ const meta = $("meta"); meta.dir = "ltr"; meta.style.unicodeBidi = "isolate";
 meta.textContent = D.event === "done" ? size(D.size) : (D.event === "start" ? D.source : "");
 const AR = /[\u0590-\u08FF]/;
 const nm = $("name"); nm.title = D.name; nm.dir = AR.test(D.name) ? "rtl" : "ltr"; nm.style.textAlign = "right";
-const m = D.name.match(/^(.*?)(\S*\.[A-Za-z0-9]{1,5})$/);       // الامتداد معزول حتى لا يصير "3.mp4" إلى "mp4.3"
+const m = D.name.match(/^(.*?)([^\s\u0590-\u08FF]*\.[A-Za-z0-9]{1,5})$/);       // الامتداد معزول حتى لا يصير "3.mp4" إلى "mp4.3"
 const base = document.createElement("bdi"); base.textContent = m ? m[1] : D.name; nm.appendChild(base);
 if (m) { const ext = document.createElement("bdi"); ext.dir = "ltr"; ext.textContent = m[2]; nm.appendChild(ext); }
 if (D.event === "error" && D.error) {

@@ -148,7 +148,7 @@ def post(origin, body):
 check("handler rejects web origin", post("https://evil.example", {"url": "http://x/y.mp4"}) == 403)
 check("handler accepts ext + meta", post("chrome-extension://abc", {"url": "http://x/y", "kind": "stream", "title": "T", "headers": {"Referer": "r"}}) == 200)
 u, h, m = pydm.incoming.get(timeout=2)
-check("meta passed", m == {"kind": "stream", "mode": "video", "title": "T", "cookies": []} and h == {"Referer": "r"}, str(m))
+check("meta passed", m == {"kind": "stream", "mode": "video", "quality": "best", "title": "T", "cookies": []} and h == {"Referer": "r"}, str(m))
 
 print("\nALL OK" if ok else "\nSOME FAILED")
 shutil.rmtree(out, ignore_errors=True)

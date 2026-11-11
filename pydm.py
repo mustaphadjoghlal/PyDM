@@ -35,6 +35,40 @@ DEFAULT_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
 NOWIN = getattr(subprocess, "CREATE_NO_WINDOW", 0)  # إخفاء نافذة ffmpeg في ويندوز
 
 incoming = queue.Queue()  # (url, headers, meta) القادمة من الإضافة
+
+
+class SpeedLimiter:
+    """حد سرعة مشترك لكل التحميلات (دلو رموز). rate = 0 يعني بلا حد."""
+
+    def __init__(self):
+        self.rate = 0
+        self.lock = threading.Lock()
+        self.allow = 0.0
+        self.stamp = time.monotonic()
+
+    def set(self, rate):
+        with self.lock:
+            self.rate = max(0, int(rate or 0))
+            self.allow = 0.0
+            self.stamp = time.monotonic()
+
+    def take(self, n):
+        while True:
+            with self.lock:
+                if not self.rate:
+                    return
+                now = time.monotonic()
+                self.allow = min(self.rate, self.allow + (now - self.stamp) * self.rate)  # رصيد ثانية واحدة كحد أقصى
+                self.stamp = now
+                if self.allow >= n or self.allow >= self.rate:
+                    self.allow -= n
+                    return
+                wait = (n - self.allow) / self.rate
+            time.sleep(min(wait, 0.25))
+
+
+LIMITER = SpeedLimiter()
+MIN_STEAL = 1024 * 1024  # أصغر جزء يستحق أن يُقسم لاتصال متفرغ
 UI = {"ready": False, "window": None}  # حالة النافذة: يُستخدم في /ping و /show
 
 
@@ -206,6 +240,8 @@ def find_ytdlp():
     return None
 
 
+QUALITIES = ("best", "2160", "1440", "1080", "720", "480", "360")
+
 YTDLP_HOSTS = re.compile(
     r"(^|\.)(youtube\.com|youtu\.be|facebook\.com|fb\.watch|instagram\.com|tiktok\.com|"
     r"twitter\.com|x\.com|vimeo\.com|dailymotion\.com|twitch\.tv|soundcloud\.com|reddit\.com)$", re.I)
@@ -253,17 +289,23 @@ class Download:
         self.thread = None
         self.failed = False
         self.cancelled = False
+        self._seglock = threading.Lock()
+        self.verify_url = False   # بعد "تحديث الرابط": نتأكد أن الرابط الجديد للملف نفسه
+        self.category = ""         # مجلد الفئة الفرعي (Video, Music ...) أو "" للمجلد الرئيسي
+        self.auto_category = False
+        self.in_queue = False      # ينتظر دوره في الطابور
+        self.on_finish = None
 
     # ---- حفظ/استرجاع
     def to_dict(self):
         return {k: getattr(self, k) for k in
                 ("url", "folder", "headers", "conns", "name", "path", "total",
-                 "ranged", "segs", "status", "error")}
+                 "ranged", "segs", "status", "error", "auto_category")}
 
     @classmethod
     def from_dict(cls, d):
         o = cls(d["url"], d["folder"], d.get("headers"), d.get("conns", 8))
-        for k in ("name", "path", "total", "ranged", "segs", "error"):
+        for k in ("name", "path", "total", "ranged", "segs", "error", "auto_category"):
             setattr(o, k, d.get(k, getattr(o, k)))
         st = d.get("status", "paused")
         o.status = st if st in ("done", "error") else "paused"
@@ -274,7 +316,8 @@ class Download:
         return self.path + ".part"
 
     def done_bytes(self):
-        return sum(max(0, s[2] - s[0]) for s in self.segs)
+        # بعد تقسيم جزء أثناء تحميله قد يكتب الاتصال القديم قطعة واحدة بعد الحد الجديد (البيانات نفسها)
+        return sum(max(0, min(s[2], s[1] + 1 if s[1] >= 0 else s[2]) - s[0]) for s in self.segs)
 
     def has_progress(self):
         return bool(self.segs)
@@ -313,7 +356,21 @@ class Download:
                 self.ranged = False
             self.name = filename_from(info.get("Content-Disposition"), r.geturl() or self.url)
 
+    def _check_new_url(self):
+        old = (self.name, self.total, self.ranged)
+        self._probe()
+        new_total = self.total
+        self.name, self.total, self.ranged = old
+        if old[1] and new_total and new_total != old[1]:
+            raise IOError(f"الرابط الجديد لملف مختلف (الحجم {fmt_size(new_total)} بدل {fmt_size(old[1])})")
+        self.verify_url = False
+
     def _prepare(self):
+        if self.auto_category:
+            sub = CATEGORY_DIRS.get(category_for_name(self.name), "")
+            if sub:
+                self.folder = os.path.join(self.folder, sub)
+            self.auto_category = False
         os.makedirs(self.folder, exist_ok=True)
         self.path = unique_path(os.path.join(self.folder, self.name))
         self.name = os.path.basename(self.path)
@@ -337,7 +394,28 @@ class Download:
     def _remaining(s):
         return s[1] < 0 or s[2] <= s[1]
 
+    def _steal(self):
+        """تقسيم ديناميكي (مثل IDM): اتصال أنهى جزءه يأخذ النصف الثاني من أكبر جزء متبقٍّ."""
+        with self._seglock:
+            best, left = None, 0
+            for s in self.segs:
+                r = s[1] - s[2] + 1
+                if s[1] >= 0 and r > left:
+                    best, left = s, r
+            if best is None or left < 2 * MIN_STEAL:
+                return None
+            mid = best[2] + left // 2
+            new = [mid, best[1], mid]
+            best[1] = mid - 1
+            self.segs.append(new)
+            return new
+
     def _worker(self, seg, ev):
+        while seg is not None and not ev.is_set():
+            self._work(seg, ev)
+            seg = self._steal() if (self.ranged and not ev.is_set() and not self._remaining(seg)) else None
+
+    def _work(self, seg, ev):
         retries = 0
         while not ev.is_set() and self._remaining(seg):
             before = seg[2]
@@ -351,9 +429,11 @@ class Download:
                     with open(self.part, "r+b" if self.ranged else "wb") as f:
                         f.seek(seg[2])
                         while not ev.is_set():
-                            want = CHUNK if seg[1] < 0 else min(CHUNK, seg[1] - seg[2] + 1)
+                            with self._seglock:
+                                want = CHUNK if seg[1] < 0 else min(CHUNK, seg[1] - seg[2] + 1)
                             if want <= 0:
                                 break
+                            LIMITER.take(want)
                             data = r.read(want)
                             if not data:
                                 break
@@ -389,7 +469,9 @@ class Download:
                 if ev.is_set():
                     return
                 self._prepare()
-            elif not self.ranged:
+            elif self.verify_url:
+                self._check_new_url()
+            if self.segs and not self.ranged:
                 for s in self.segs:
                     s[2] = s[0]
             if not os.path.exists(self.part):  # الملف الجزئي مفقود: نبدأ من جديد
@@ -434,6 +516,7 @@ class Download:
 
     # ---- تحكم
     def start(self):
+        self.in_queue = False
         if self.status == "done":
             return
         if self.thread and self.thread.is_alive() and not self.stop.is_set():
@@ -443,8 +526,19 @@ class Download:
         self.cancelled = False
         self.attempt = getattr(self, "attempt", 0) + 1
         self.status = "queued"
-        self.thread = threading.Thread(target=self._run, args=(self.stop, prev), daemon=True)
+        self.thread = threading.Thread(target=self._run_and_notify, args=(self.stop, prev), daemon=True)
         self.thread.start()
+
+    def _run_and_notify(self, ev, prev):
+        try:
+            self._run(ev, prev)
+        finally:
+            cb = self.on_finish        # الطابور: انتهى هذا التحميل، فليبدأ التالي فوراً
+            if cb:
+                try:
+                    cb()
+                except Exception:
+                    pass
 
     def pause(self):
         if self.status in ("downloading", "queued"):
@@ -614,6 +708,7 @@ class StreamDownload(Download):
             try:
                 with self._open(url=self.seg_urls[i]) as r, open(tmp, "wb") as f:
                     while not ev.is_set():
+                        LIMITER.take(CHUNK)
                         data = r.read(CHUNK)
                         if not data:
                             break
@@ -826,6 +921,7 @@ class YtdlpDownload(Download):
         super().__init__(url, folder, headers, conns)
         self.title = title
         self.media = "audio" if media == "audio" else "video"
+        self.quality = "best"     # best | 2160 | 1440 | 1080 | 720 | 480 | 360
         self.bytes_done = 0
         self.proc = None
         self.cookies = []      # من المتصفح، في الذاكرة فقط (لا تُحفظ على القرص)
@@ -834,7 +930,7 @@ class YtdlpDownload(Download):
 
     def to_dict(self):
         d = super().to_dict()
-        d.update(kind="ytdlp", title=self.title, media=self.media)
+        d.update(kind="ytdlp", title=self.title, media=self.media, quality=self.quality)
         return d
 
     @classmethod
@@ -842,6 +938,7 @@ class YtdlpDownload(Download):
         o = super().from_dict(d)
         o.title = d.get("title", "")
         o.media = "audio" if d.get("media") == "audio" else "video"
+        o.quality = d.get("quality") if d.get("quality") in QUALITIES else "best"
         if o.status == "done":
             o.bytes_done = o.total
         return o
@@ -944,10 +1041,15 @@ class YtdlpDownload(Download):
         if self.media == "audio":
             cmd += ["-x", "--audio-format", "mp3"] if ff else ["-f", "ba/b"]
         else:
+            res = "res" if self.quality == "best" else f"res:{self.quality}"   # res:720 = أفضل جودة لا تتجاوز 720
             if self.compat:
                 # H.264 + AAC أولاً: VP9/AV1/Opus داخل mp4 يرفضها البريمير ("unsupported compression type")
-                cmd += ["-S", "vcodec:h264,res,acodec:m4a"]
+                cmd += ["-S", f"vcodec:h264,{res},acodec:m4a"]
+            elif res != "res":
+                cmd += ["-S", res]
             cmd += ["-f", "bv*+ba/b", "--merge-output-format", "mp4"] if ff else ["-f", "b"]
+        if LIMITER.rate:
+            cmd += ["--limit-rate", str(LIMITER.rate)]
         return cmd + [self.url]
 
     def _run(self, ev, prev):
@@ -1072,6 +1174,7 @@ class Handler(BaseHTTPRequestHandler):
             kind = data.get("kind")
             meta = {"kind": kind if kind in ("stream", "ytdlp") else "",
                     "mode": "audio" if data.get("mode") == "audio" else "video",
+                    "quality": data.get("quality") if data.get("quality") in QUALITIES else "best",
                     "title": str(data.get("title", ""))[:200]}
             cookies = []
             for c in (data.get("cookies") or [])[:300]:
@@ -1093,6 +1196,19 @@ ARCHIVE_EXT = {"zip", "rar", "7z", "tar", "gz", "bz2", "xz", "iso"}
 APP_EXT = {"exe", "msi", "apk", "dmg", "appx", "msix"}
 DOC_EXT = {"pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx", "txt", "epub", "csv"}
 IMAGE_EXT = {"jpg", "jpeg", "png", "gif", "webp", "svg", "psd", "ai", "bmp", "heic"}
+
+
+CATEGORY_DIRS = {"video": "Video", "audio": "Music", "archive": "Compressed",
+                 "app": "Programs", "doc": "Documents", "image": "Images"}
+
+
+def category_for_name(name):
+    ext = os.path.splitext(name or "")[1].lower().lstrip(".")
+    for cat, exts in (("video", VIDEO_EXT), ("audio", AUDIO_EXT), ("archive", ARCHIVE_EXT),
+                      ("app", APP_EXT), ("doc", DOC_EXT), ("image", IMAGE_EXT)):
+        if ext in exts:
+            return cat
+    return "other"
 
 
 def category_of(d):
@@ -1138,6 +1254,22 @@ def reveal_path(path):
         except Exception:
             pass
     return open_path(os.path.dirname(path) if path and os.path.isfile(path) else path)
+
+
+def run_when_done(action):
+    """عند انتهاء كل التحميلات: إيقاف التشغيل (بعد دقيقة، يُلغى بـ shutdown /a) أو السكون."""
+    trace(f"when done: {action}")
+    if not sys.platform.startswith("win"):
+        return
+    try:
+        if action == "shutdown":
+            subprocess.Popen(["shutdown", "/s", "/t", "60", "/c",
+                              "PyDM: اكتملت التحميلات. سيُطفأ الجهاز خلال دقيقة. للإلغاء: shutdown /a"],
+                             creationflags=NOWIN)
+        elif action == "sleep":
+            subprocess.Popen(["rundll32.exe", "powrprof.dll,SetSuspendState", "0,1,0"], creationflags=NOWIN)
+    except Exception:
+        log_error("when_done")
 
 
 RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
@@ -1214,6 +1346,12 @@ class Manager:
         self.cfg.setdefault("conns", 8)
         self.cfg.setdefault("compat", True)   # فيديو H.264 يقبله البريمير
         self.cfg.setdefault("notify", True)   # إشعار عند بدء التحميل وانتهائه
+        self.cfg.setdefault("max_parallel", 3)   # تحميلات في الوقت نفسه، والباقي ينتظر دوره
+        self.cfg.setdefault("speed_limit", 0)    # بايت/ثانية، 0 = بلا حد
+        self.cfg.setdefault("categories", True)  # مجلدات فرعية حسب النوع مثل IDM
+        self.cfg["when_done"] = "none"           # لا يُحفظ بين التشغيلات (مثل IDM)
+        LIMITER.set(self.cfg["speed_limit"])
+        self._was_active = False
         self.items = []
         self.notifier = None                  # يُعيَّن عند فتح النافذة
         self._last_status = {}
@@ -1229,6 +1367,7 @@ class Manager:
     def _insert(self, d):
         self._uid += 1
         d.uid = str(self._uid)
+        d.on_finish = self.schedule
         d.added = getattr(d, "added", time.time())
         self.items.append(d)
         return d
@@ -1237,24 +1376,72 @@ class Manager:
         meta = meta or {}
         conns = int(self.cfg.get("conns", 8))
         folder = self.cfg["folder"]
+        cats = bool(self.cfg.get("categories", True))
         kind = meta.get("kind")
         if kind == "ytdlp" or (kind != "stream" and is_ytdlp_url(url)):
-            d = YtdlpDownload(url, folder, headers, conns, meta.get("title", ""), meta.get("mode", "video"))
+            media = meta.get("mode", "video")
+            if cats:
+                folder = os.path.join(folder, CATEGORY_DIRS["audio" if media == "audio" else "video"])
+            d = YtdlpDownload(url, folder, headers, conns, meta.get("title", ""), media)
             d.cookies = meta.get("cookies") or []
             d.compat = bool(self.cfg.get("compat", True))
+            d.quality = meta.get("quality") if meta.get("quality") in QUALITIES else "best"
         elif kind == "stream" or is_stream_url(url):
+            if cats:
+                folder = os.path.join(folder, CATEGORY_DIRS["video"])
             d = StreamDownload(url, folder, headers, conns, meta.get("title", ""))
         else:
             d = Download(url, folder, headers, conns)
+            d.auto_category = cats      # المجلد الفرعي يُحدد بعد معرفة اسم الملف
         with self.lock:
             self._insert(d)
             self._last_status[d.uid] = None
-        d.start()
-        # إشعار البدء بعد لحظة: حتى يُعرف اسم الملف بدل الرابط
-        t = threading.Timer(1.5, lambda: d.status in ("downloading", "queued") and self._notify("start", d))
-        t.daemon = True
-        t.start()
+            d.in_queue = True
+        self.schedule()
         return d
+
+    # ---- الطابور
+    def _active(self):
+        return [d for d in self.items if not getattr(d, "in_queue", False) and d.status in ("queued", "downloading")]
+
+    def enqueue(self, d):
+        if d.status in ("paused", "error"):
+            d.status = "queued"
+            d.error = ""
+            d.in_queue = True
+            self.schedule()
+            return True
+        return False
+
+    def schedule(self):
+        """يبدأ المنتظرين حسب الترتيب ما دام عدد التحميلات الجارية أقل من الحد."""
+        with self.lock:
+            limit = max(1, int(self.cfg.get("max_parallel", 3)))
+            free = limit - len(self._active())
+            start = []
+            for d in self.items:
+                if free <= 0:
+                    break
+                if getattr(d, "in_queue", False) and d.status == "queued":
+                    start.append(d)
+                    free -= 1
+        for d in start:
+            d.start()          # يجعل in_queue = False
+            # إشعار البدء بعد لحظة: حتى يُعرف اسم الملف بدل الرابط
+            t = threading.Timer(1.5, lambda d=d: d.status == "downloading" and self._notify("start", d))
+            t.daemon = True
+            t.start()
+
+    def _check_when_done(self):
+        with self.lock:
+            active = any(getattr(d, "in_queue", False) or d.status in ("queued", "downloading") for d in self.items)
+        if self._was_active and not active:
+            action = self.cfg.get("when_done", "none")
+            if action != "none":
+                self.cfg["when_done"] = "none"
+                self.save()
+                run_when_done(action)
+        self._was_active = active
 
     def _notify(self, event, d):
         if self.notifier and self.cfg.get("notify", True):
@@ -1316,7 +1503,9 @@ class Manager:
             for d in list(self.items):
                 if d.status == "canceled" and not (d.thread and d.thread.is_alive()):
                     self.items.remove(d)
+        self.schedule()
         self.watch_status()
+        self._check_when_done()
         return added
 
     def row(self, d):
@@ -1331,6 +1520,7 @@ class Manager:
             "indeterminate": d.status == "downloading" and not d.has_progress(),
             "done": done, "total": d.total, "speed": d.speed if d.status == "downloading" else 0,
             "eta": eta, "path": d.path, "added": d.added,
+            "waiting": bool(getattr(d, "in_queue", False)) and d.status == "queued",
         }
 
     def snapshot(self):
@@ -1342,7 +1532,11 @@ class Manager:
             "speed": sum(r["speed"] for r in rows),
             "settings": {"folder": self.cfg["folder"], "conns": int(self.cfg.get("conns", 8)),
                          "startup": startup_get(), "compat": bool(self.cfg.get("compat", True)),
-                         "notify": bool(self.cfg.get("notify", True))},
+                         "notify": bool(self.cfg.get("notify", True)),
+                         "max_parallel": int(self.cfg.get("max_parallel", 3)),
+                         "speed_limit": int(self.cfg.get("speed_limit", 0)),
+                         "categories": bool(self.cfg.get("categories", True)),
+                         "when_done": self.cfg.get("when_done", "none")},
             "tools": {"ytdlp": bool(find_ytdlp()), "ffmpeg": bool(find_ffmpeg()),
                       "deno": bool(find_js_runtime())},
         }
@@ -1384,6 +1578,9 @@ class Api:
         m = re.search(r"https?://\S+", clipboard_text())
         return m.group(0) if m else ""
 
+    def quality_list(self):
+        return list(QUALITIES)
+
     def detect(self, url):
         url = (url or "").strip()
         if is_ytdlp_url(url):
@@ -1392,10 +1589,11 @@ class Api:
             return "stream"
         return "file" if url.startswith(("http://", "https://")) else ""
 
-    def add(self, text, mode="video"):
+    def add(self, text, mode="video", quality="best"):
         urls = re.findall(r"https?://[^\s\"'<>]+", text or "")
         for url in urls:
-            self._mgr.add(url, None, {"mode": "audio" if mode == "audio" else "video"})
+            self._mgr.add(url, None, {"mode": "audio" if mode == "audio" else "video",
+                                      "quality": quality if quality in QUALITIES else "best"})
         return len(urls)
 
     def _with(self, uid, fn):
@@ -1406,10 +1604,16 @@ class Api:
         return True
 
     def pause(self, uid):
-        return self._with(uid, lambda d: d.pause())
+        def stop(d):
+            d.in_queue = False
+            d.pause()
+        ok = self._with(uid, stop)
+        self._mgr.schedule()
+        return ok
 
     def resume(self, uid):
-        return self._with(uid, lambda d: d.start() if d.status in ("paused", "error") else None)
+        d = self._mgr.get(str(uid))
+        return bool(d and self._mgr.enqueue(d))
 
     def remove(self, uid, delete_file=False):
         return self._mgr.remove(str(uid), bool(delete_file))
@@ -1426,14 +1630,31 @@ class Api:
 
     def pause_all(self):
         for d in list(self._mgr.items):
+            d.in_queue = False
             d.pause()
         return True
 
     def resume_all(self):
         for d in list(self._mgr.items):
             if d.status == "paused":
-                d.start()
+                d.status = "queued"
+                d.in_queue = True
+        self._mgr.schedule()
         return True
+
+    def refresh_link(self, uid, url):
+        """رابط جديد لتحميل انتهت صلاحية رابطه، ثم الاستئناف من حيث توقف."""
+        d = self._mgr.get(str(uid))
+        url = (url or "").strip()
+        if not d or d.status not in ("paused", "error") or urllib.parse.urlparse(url).scheme not in ("http", "https"):
+            return False
+        d.url = url
+        if isinstance(d, StreamDownload):
+            d._rm_part()          # قطع البث مرتبطة بالقائمة القديمة: نبدأ البث من جديد
+            d.mode, d.seg_urls, d.seg_done, d.workdir, d.bytes_done = "", [], [], "", 0
+        elif type(d) is Download:
+            d.verify_url = bool(d.segs)
+        return self._mgr.enqueue(d)
 
     def clear_done(self):
         with self._mgr.lock:
@@ -1464,9 +1685,27 @@ class Api:
         return startup_set(bool(on))
 
     def set_option(self, key, value):
-        if key not in ("compat", "notify"):
+        cfg = self._mgr.cfg
+        if key in ("compat", "notify", "categories"):
+            cfg[key] = bool(value)
+        elif key == "max_parallel":
+            try:
+                cfg[key] = max(1, min(10, int(value)))
+            except (TypeError, ValueError):
+                return False
+            self._mgr.schedule()
+        elif key == "speed_limit":
+            try:
+                cfg[key] = max(0, int(float(value)))
+            except (TypeError, ValueError):
+                return False
+            LIMITER.set(cfg[key])
+        elif key == "when_done":
+            if value not in ("none", "shutdown", "sleep"):
+                return False
+            cfg[key] = value
+        else:
             return False
-        self._mgr.cfg[key] = bool(value)
         self._mgr.save()
         return True
 

@@ -108,7 +108,7 @@ def post(body):
     return c.getresponse().status
 check("handler ytdlp meta", post({"url": URL, "kind": "ytdlp", "mode": "audio", "title": "ع"}) == 200)
 u, h, m = pydm.incoming.get(timeout=2)
-check("meta mode/kind", m == {"kind": "ytdlp", "mode": "audio", "title": "ع", "cookies": []}, str(m))
+check("meta mode/kind", m == {"kind": "ytdlp", "mode": "audio", "quality": "best", "title": "ع", "cookies": []}, str(m))
 post({"url": URL, "kind": "weird"}); u, h, m = pydm.incoming.get(timeout=2)
 check("unknown kind sanitized", m["kind"] == "" and m["mode"] == "video")
 

@@ -58,6 +58,7 @@ async def main():
         vis, sent, errs, _ = await run(b, "https://www.youtube.com/watch?v=UgUgz4T3_wc", page_html("Jolene - YouTube"),
                                        shot="/home/claude/t/shots/float_youtube.png", menu_shot="/home/claude/t/shots/float_menu_youtube.png")
         check("youtube: yt-dlp with page url", sent and sent[0]["kind"] == "ytdlp" and sent[0]["url"].endswith("v=UgUgz4T3_wc") and sent[0]["mode"] == "video", sent)
+        check("youtube: one click uses best quality by default", sent[0].get("quality") == "best", sent)
         feed = page_html("YouTube", '<a href="/watch?v=FEED123" style="display:block">thumb</a>')
         feed = feed.replace('<video id=v', '<a href="/watch?v=FEED123"><video id=v').replace('controls></video>', 'controls></video></a>', 1)
         vis, sent, errs, _ = await run(b, "https://www.youtube.com/", feed)
