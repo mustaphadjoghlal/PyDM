@@ -2,7 +2,7 @@
 ; التثبيت الصامت:  PyDM-Setup.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART
 
 #ifndef AppVersion
-  #define AppVersion "1.2.0"
+  #define AppVersion "1.5.0"
 #endif
 
 [Setup]
