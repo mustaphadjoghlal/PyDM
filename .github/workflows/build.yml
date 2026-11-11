@@ -26,71 +26,74 @@ jobs:
       - name: Build PyDM (folder)
         run: pyinstaller --noconfirm --onedir --windowed --name PyDM --icon assets/icon.ico --add-data "assets/icon.png;assets" --add-data "assets/icon.ico;assets" --add-data "ui;ui" --collect-all webview --contents-directory lib pydm.py
 
-      # ينجح فقط إذا فُتحت النافذة وحمّلت الواجهة (ui=true)، وليس مجرد بدء الخادم
-      - name: Smoke test (window opens and the interface loads)
+      # ينجح فقط إذا فُتحت النافذة وحمّلت الواجهة، وظهرت نافذة معلومات الملف والإشعار فوق كل النوافذ
+      - name: Smoke test (window, file-info dialog and notification)
         shell: pwsh
         run: |
-          $p = Start-Process dist\PyDM\PyDM.exe -PassThru
-          $ok = $false
-          for ($i = 0; $i -lt 40; $i++) {
-            Start-Sleep -Seconds 1
-            if ($p.HasExited) { Write-Host "PyDM.exe exited with code $($p.ExitCode)"; break }
-            try {
-              $r = Invoke-WebRequest http://127.0.0.1:9614/ping -UseBasicParsing -TimeoutSec 2
-              Write-Host "ping: $($r.Content)"
-              if ($r.Content -match '"ui": true') { $ok = $true; break }
-            } catch { Write-Host "ping failed: $($_.Exception.Message)" }
-          }
-          # الإشعار: نحمّل ملفاً صغيراً ثم نتأكد أن نافذة الإشعار ظاهرة وفوق كل النوافذ
-          $toast = 'not checked'
-          if ($ok) {
-            Add-Type -Namespace W -Name U -MemberDefinition @"
-              [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern IntPtr FindWindowW(string c, string t);
-              [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr h);
-              [DllImport("user32.dll", EntryPoint="GetWindowLongPtrW")] public static extern IntPtr GetWindowLongPtr(IntPtr h, int i);
+          Add-Type @"
+          using System; using System.Text; using System.Collections.Generic; using System.Runtime.InteropServices;
+          public class Win {
+            delegate bool EnumProc(IntPtr h, IntPtr l);
+            [DllImport("user32.dll")] static extern bool EnumWindows(EnumProc f, IntPtr l);
+            [DllImport("user32.dll", CharSet=CharSet.Unicode)] static extern int GetWindowTextW(IntPtr h, StringBuilder s, int n);
+            [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr h);
+            [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
+            [DllImport("user32.dll", EntryPoint="GetWindowLongPtrW")] static extern IntPtr GetWindowLongPtr(IntPtr h, int i);
+            public static List<string> List(uint pid) {
+              var r = new List<string>();
+              EnumWindows((h, l) => { uint p; GetWindowThreadProcessId(h, out p); if (p == pid) { var sb = new StringBuilder(256); GetWindowTextW(h, sb, 256);
+                if (sb.Length > 0) r.Add(sb.ToString() + "|visible=" + IsWindowVisible(h) + "|topmost=" + ((GetWindowLongPtr(h, -20).ToInt64() & 8) != 0)); } return true; }, IntPtr.Zero);
+              return r; } }
           "@
-            Invoke-WebRequest http://127.0.0.1:9614/add -Method Post -ContentType 'application/json' -Headers @{Origin='chrome-extension://ci'} -Body '{"url":"http://127.0.0.1:9614/ping"}' -UseBasicParsing | Out-Null
-            $toast = 'missing'
+          function Start-App {
+            $p = Start-Process dist\PyDM\PyDM.exe -PassThru
+            for ($i = 0; $i -lt 40; $i++) {
+              Start-Sleep -Seconds 1
+              if ($p.HasExited) { Write-Host "PyDM.exe exited with code $($p.ExitCode)"; return $null }
+              try { if ((Invoke-WebRequest http://127.0.0.1:9614/ping -UseBasicParsing -TimeoutSec 2).Content -match '"ui": true') { return $p } } catch {}
+            }
+            return $p
+          }
+          function Wait-Window($p, $pattern) {     # نافذة ظاهرة وفوق الجميع يطابق عنوانها النمط
             for ($i = 0; $i -lt 40; $i++) {
               Start-Sleep -Milliseconds 500
-              $h = [W.U]::FindWindowW($null, 'PyDM-Toast')
-              if ($h -ne [IntPtr]::Zero) {
-                $top = ([W.U]::GetWindowLongPtr($h, -20).ToInt64() -band 0x8) -ne 0
-                $vis = [W.U]::IsWindowVisible($h)
-                $toast = "visible=$vis topmost=$top"
-                if ($vis -and $top) { break }
-              }
+              foreach ($w in [Win]::List($p.Id)) { if ($w -match $pattern -and $w -match 'visible=True\|topmost=True') { return $true } }
             }
-            Write-Host "notification window: $toast"
+            Write-Host "windows of the process:"; [Win]::List($p.Id) | ForEach-Object { Write-Host "   $_" }
+            return $false
           }
-          Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
-          foreach ($f in 'startup.log','error.log','crash.log') {
-            $path = "$env:USERPROFILE\.pydm\$f"
-            if (Test-Path $path) { Write-Host "===== $f"; Get-Content $path }
+          function Send-Download { Invoke-WebRequest http://127.0.0.1:9614/add -Method Post -ContentType 'application/json' -Headers @{Origin='chrome-extension://ci'} -Body '{"url":"http://127.0.0.1:9614/ping"}' -UseBasicParsing | Out-Null }
+          function Show-Logs { foreach ($f in 'startup.log','error.log','crash.log') { $path = "$env:USERPROFILE\.pydm\$f"; if (Test-Path $path) { Write-Host "===== $f"; Get-Content $path } } }
+
+          $p = Start-App
+          $ui = $p -and ((Invoke-WebRequest http://127.0.0.1:9614/ping -UseBasicParsing).Content -match '"ui": true')
+          $info = $false; $toast = $false
+          if ($ui) {
+            Send-Download
+            $info = Wait-Window $p '^PyDM - '
+            Write-Host "file-info dialog on top: $info"
           }
-          if ($ok -and $toast -ne 'visible=True topmost=True') { throw "notification window is not on top: $toast" }
-          if (-not $ok) {
+          if ($p) { Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue }
+          Show-Logs
+          if ($ui) {
+            Start-Sleep -Seconds 2
+            '{"ask": false}' | Set-Content "$env:USERPROFILE\.pydm\config.json" -Encoding utf8NoBOM    # تحميل مباشر: نختبر الإشعار
+            $p = Start-App
+            Send-Download
+            $toast = Wait-Window $p '^PyDM-Toast'
+            Write-Host "notification on top: $toast"
+            Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
+            Show-Logs
+            Remove-Item "$env:USERPROFILE\.pydm\config.json", "$env:USERPROFILE\.pydm\downloads.json" -ErrorAction SilentlyContinue
+          }
+          if (-not $ui) {
             Write-Host "===== .NET / application errors from the Windows event log"
             Get-WinEvent -FilterHashtable @{LogName='Application'; StartTime=(Get-Date).AddMinutes(-5)} -ErrorAction SilentlyContinue |
-              Where-Object { $_.ProviderName -in '.NET Runtime','Application Error' } |
-              Select-Object -First 3 | ForEach-Object { $_.Message }
-            Write-Host "===== bundled webview / pythonnet files"
-            Get-ChildItem dist\PyDM\lib -Recurse -Include *.dll | Where-Object { $_.FullName -match 'webview|pythonnet|clr' } | ForEach-Object { $_.FullName.Replace((Resolve-Path dist\PyDM).Path, '') }
-            Write-Host "===== same code from source (not frozen)"
-            Remove-Item "$env:USERPROFILE\.pydm\startup.log" -ErrorAction SilentlyContinue
-            $q = Start-Process python -ArgumentList 'pydm.py' -PassThru -RedirectStandardError src_err.txt -RedirectStandardOutput src_out.txt
-            $src = $false
-            for ($i = 0; $i -lt 25; $i++) {
-              Start-Sleep -Seconds 1
-              if ($q.HasExited) { Write-Host "source run exited with code $($q.ExitCode)"; break }
-              try { $r = Invoke-WebRequest http://127.0.0.1:9614/ping -UseBasicParsing -TimeoutSec 2; if ($r.Content -match '"ui": true') { $src = $true; break } } catch {}
-            }
-            Stop-Process -Id $q.Id -Force -ErrorAction SilentlyContinue
-            Write-Host "source run interface loaded: $src"
-            Get-Content "$env:USERPROFILE\.pydm\startup.log" -ErrorAction SilentlyContinue
-            Get-Content src_err.txt -ErrorAction SilentlyContinue | Select-Object -Last 30
+              Where-Object { $_.ProviderName -in '.NET Runtime','Application Error' } | Select-Object -First 3 | ForEach-Object { $_.Message }
             throw "PyDM.exe started but the interface did not load"
           }
+          if (-not $info) { throw "the file-info dialog did not appear on top" }
+          if (-not $toast) { throw "the notification did not appear on top" }
 
       - name: Download yt-dlp, ffmpeg and deno
         shell: pwsh

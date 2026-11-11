@@ -340,17 +340,18 @@ class Download:
         self.auto_category = False
         self.in_queue = False      # ينتظر دوره في الطابور
         self.on_finish = None
+        self.force_name = ""       # اسم اختاره المستخدم في نافذة معلومات الملف
 
     # ---- حفظ/استرجاع
     def to_dict(self):
         return {k: getattr(self, k) for k in
                 ("url", "folder", "headers", "conns", "name", "path", "total",
-                 "ranged", "segs", "status", "error", "auto_category")}
+                 "ranged", "segs", "status", "error", "auto_category", "force_name")}
 
     @classmethod
     def from_dict(cls, d):
         o = cls(d["url"], d["folder"], d.get("headers"), d.get("conns", 8))
-        for k in ("name", "path", "total", "ranged", "segs", "error", "auto_category"):
+        for k in ("name", "path", "total", "ranged", "segs", "error", "auto_category", "force_name"):
             setattr(o, k, d.get(k, getattr(o, k)))
         st = d.get("status", "paused")
         o.status = st if st in ("done", "error") else "paused"
@@ -416,6 +417,8 @@ class Download:
             if sub:
                 self.folder = os.path.join(self.folder, sub)
             self.auto_category = False
+        if self.force_name:
+            self.name = safe_name(self.force_name) or self.name
         os.makedirs(self.folder, exist_ok=True)
         self.path = unique_path(os.path.join(self.folder, self.name))
         self.name = os.path.basename(self.path)
@@ -1092,8 +1095,9 @@ class YtdlpDownload(Download):
         if not exe:
             raise IOError("يحتاج yt-dlp: ضع yt-dlp.exe بجانب PyDM.exe")
         ff = find_ffmpeg()
+        stem = safe_name(self.force_name).replace("%", "%%") if self.force_name else "%(title).150B"
         tpl = os.path.join(self._workdir().replace("%", "%%"),
-                           self.prefix.replace("%", "%%") + "%(title).150B.%(ext)s")
+                           self.prefix.replace("%", "%%") + stem + ".%(ext)s")
         cmd = exe + ["--no-playlist", "--newline", "--no-colors", "--progress",
                      "--progress-template", self.TEMPLATE,
                      "--print", "after_move:PYDMFILE %(filepath)s", "-o", tpl]
@@ -1423,6 +1427,9 @@ class Manager:
         self.cfg.setdefault("max_parallel", 3)   # تحميلات في الوقت نفسه، والباقي ينتظر دوره
         self.cfg.setdefault("speed_limit", 0)    # بايت/ثانية، 0 = بلا حد
         self.cfg.setdefault("categories", True)  # مجلدات فرعية حسب النوع مثل IDM
+        self.cfg.setdefault("ask", True)         # نافذة "معلومات الملف" قبل كل تحميل، مثل IDM
+        self.info_ui = None                      # يُعيَّن عند فتح النافذة الرئيسية
+        self.pending = {}
         self.cfg["when_done"] = "none"           # لا يُحفظ بين التشغيلات (مثل IDM)
         LIMITER.set(self.cfg["speed_limit"])
         self._was_active = False
@@ -1470,6 +1477,83 @@ class Manager:
         t.start()
         return t
 
+    def kind_of(self, url, meta):
+        kind = (meta or {}).get("kind")
+        if kind == "ytdlp" or (kind != "stream" and is_ytdlp_url(url)):
+            return "ytdlp"
+        if kind == "stream" or is_stream_url(url):
+            return "stream"
+        return "file"
+
+    def category_folder(self, cat):
+        sub = CATEGORY_DIRS.get(cat, "") if self.cfg.get("categories", True) else ""
+        return os.path.join(self.cfg["folder"], sub) if sub else self.cfg["folder"]
+
+    def request(self, url, headers=None, meta=None):
+        """طلب تحميل جديد: يعرض نافذة معلومات الملف (إن كانت مفعّلة) أو يبدأ مباشرة."""
+        meta = dict(meta or {})
+        if (not self.cfg.get("ask", True) or self.info_ui is None or meta.get("subfolder")
+                or (meta.get("playlist") and is_ytdlp_url(url))):
+            return self.add(url, headers, meta)
+        kind = self.kind_of(url, meta)
+        title = re.sub(r"\s*[-|–]\s*(YouTube|Facebook|Instagram|TikTok|X|Vimeo)\s*$", "", meta.get("title") or "").strip()
+        if kind == "ytdlp":
+            cat = "audio" if meta.get("mode") == "audio" else "video"
+            name, ext = safe_name(title), (".mp3" if cat == "audio" else ".mp4")
+        elif kind == "stream":
+            cat, name, ext = "video", safe_name(title) or "video", ".mp4"
+        else:
+            name = filename_from(None, url)
+            cat, ext = category_for_name(name), ""
+        self._uid += 1
+        p = {"id": "p" + str(self._uid), "url": url, "headers": headers, "meta": meta, "kind": kind,
+             "name": name, "ext": ext, "total": 0, "category": cat, "folder": self.category_folder(cat),
+             "probing": kind == "file"}
+        self.pending[p["id"]] = p
+        if kind == "file":
+            threading.Thread(target=self._probe_pending, args=(p,), daemon=True).start()
+        try:
+            self.info_ui.open(p)
+        except Exception:
+            log_error("info dialog")
+            self.pending.pop(p["id"], None)
+            return self.add(url, headers, meta)
+        return None
+
+    def _probe_pending(self, p):
+        try:
+            d = Download(p["url"], p["folder"], p["headers"], 1)
+            d._probe()
+            p["total"] = d.total
+            if d.name and d.name != p["name"]:
+                p["name"] = d.name
+                cat = category_for_name(d.name)
+                if cat != p["category"] and not p.get("user_cat"):
+                    p["category"], p["folder"] = cat, self.category_folder(cat)
+        except Exception as e:
+            p["error"] = str(e)[:120]
+        p["probing"] = False
+
+    def resolve(self, pid, action, name="", folder="", never=False):
+        """نتيجة نافذة معلومات الملف: start | later | cancel."""
+        p = self.pending.pop(pid, None)
+        if never:
+            self.cfg["ask"] = False
+            self.save()
+        if not p or action == "cancel":
+            return None
+        meta = dict(p["meta"], kind={"file": ""}.get(p["kind"], p["kind"]))
+        name = safe_name(name)
+        if name:
+            if p["kind"] != "file":                         # الامتداد يحدده yt-dlp / البث
+                name = re.sub(r"\.(mp4|mp3|mkv|webm|m4a|ts)$", "", name, flags=re.I)
+            meta["name"] = name
+        if folder:
+            meta["folder"] = folder
+        if action == "later":
+            meta["later"] = True
+        return self.add(p["url"], p["headers"], meta)
+
     def add(self, url, headers=None, meta=None):
         meta = meta or {}
         if meta.get("playlist") and is_ytdlp_url(url):
@@ -1497,10 +1581,20 @@ class Manager:
         else:
             d = Download(url, folder, headers, conns)
             d.auto_category = cats      # المجلد الفرعي يُحدد بعد معرفة اسم الملف
+        if meta.get("folder"):          # اختاره المستخدم في نافذة معلومات الملف
+            d.folder = meta["folder"]
+            d.auto_category = False
+        if meta.get("name"):
+            d.force_name = meta["name"]
+            if isinstance(d, (StreamDownload, YtdlpDownload)):
+                d.title = meta["name"]
+        later = bool(meta.get("later"))
         with self.lock:
             self._insert(d)
             self._last_status[d.uid] = None
-            d.in_queue = True
+            d.in_queue = not later
+            if later:                   # "حمّل لاحقاً": يبقى في القائمة متوقفاً
+                d.status = "paused"
         self.schedule()
         return d
 
@@ -1548,6 +1642,7 @@ class Manager:
         self._was_active = active
 
     def _notify(self, event, d):
+        trace(f"notify {event}: notifier={'yes' if self.notifier else 'no'}")
         if self.notifier and self.cfg.get("notify", True):
             try:
                 self.notifier.show(event, self.row(d))
@@ -1599,7 +1694,7 @@ class Manager:
         try:
             while True:
                 url, hdrs, meta = incoming.get_nowait()
-                self.add(url, hdrs, meta)
+                self.request(url, hdrs, meta)
                 added += 1
         except queue.Empty:
             pass
@@ -1642,6 +1737,7 @@ class Manager:
                          "max_parallel": int(self.cfg.get("max_parallel", 3)),
                          "speed_limit": int(self.cfg.get("speed_limit", 0)),
                          "categories": bool(self.cfg.get("categories", True)),
+                         "ask": bool(self.cfg.get("ask", True)),
                          "when_done": self.cfg.get("when_done", "none")},
             "tools": {"ytdlp": bool(find_ytdlp()), "ffmpeg": bool(find_ffmpeg()),
                       "deno": bool(find_js_runtime())},
@@ -1700,7 +1796,7 @@ class Api:
     def add(self, text, mode="video", quality="best", playlist=False):
         urls = re.findall(r"https?://[^\s\"'<>]+", text or "")
         for url in urls:
-            self._mgr.add(url, None, {"mode": "audio" if mode == "audio" else "video",
+            self._mgr.request(url, None, {"mode": "audio" if mode == "audio" else "video",
                                       "quality": quality if quality in QUALITIES else "best",
                                       "playlist": bool(playlist) and is_playlist_url(url)})
         return len(urls)
@@ -1795,7 +1891,7 @@ class Api:
 
     def set_option(self, key, value):
         cfg = self._mgr.cfg
-        if key in ("compat", "notify", "categories"):
+        if key in ("compat", "notify", "categories", "ask"):
             cfg[key] = bool(value)
         elif key == "max_parallel":
             try:
@@ -1839,6 +1935,7 @@ def force_topmost(win, x=None, y=None):
             return False
         SWP_NOSIZE, SWP_NOMOVE, SWP_NOACTIVATE, SWP_SHOWWINDOW = 0x1, 0x2, 0x10, 0x40
         flags = SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW | (SWP_NOMOVE if x is None else 0)
+        trace(f"topmost hwnd={hwnd}")
         u32.ShowWindow(hwnd, 4)                                   # SW_SHOWNOACTIVATE
         u32.SetWindowPos(hwnd, -1, int(x or 0), int(y or 0), 0, 0, flags)   # HWND_TOPMOST
         return True
@@ -1932,19 +2029,129 @@ class Notifier:
         html = self.template.replace("/*__DATA__*/null", json.dumps(data, ensure_ascii=False))
         self.close()      # إشعار واحد في كل مرة: الجديد يحل محل القديم
         x, y = self._pos()
+        trace(f"toast {event} at {x},{y}")
         w = webview.create_window(
             TOAST_TITLE, html=html, js_api=self.api, width=TOAST_W, height=TOAST_H, x=x, y=y,
             resizable=False, frameless=True, on_top=True, focus=False, shadow=True,
             background_color="#03154A")
+        trace("toast window created")
         try:
-            w.events.shown += lambda: self._raise(w)
+            w.events.shown += lambda: (trace("toast shown"), self._raise(w))
         except Exception:
-            pass
+            log_error("toast events")
         with self.lock:
             self.win = w
             self.timer = threading.Timer(8 if event == "start" else 15, self.close)
             self.timer.daemon = True
             self.timer.start()
+
+
+INFO_TITLE = "PyDM - معلومات الملف"
+CATEGORY_LABELS = [("other", "عام"), ("video", "فيديو"), ("audio", "موسيقى"), ("archive", "ملفات مضغوطة"),
+                   ("app", "برامج"), ("doc", "مستندات"), ("image", "صور")]
+
+
+def bring_to_front(win, title):
+    """يُظهر النافذة أمام كل النوافذ ويعطيها التركيز (نافذة تنتظر قرار المستخدم)."""
+    if not sys.platform.startswith("win"):
+        return False
+    try:
+        import ctypes
+        u32 = ctypes.windll.user32
+        try:
+            hwnd = int(win.native.Handle.ToInt64())
+        except Exception:
+            hwnd = u32.FindWindowW(None, title)
+        if not hwnd:
+            return False
+        u32.ShowWindow(hwnd, 5)
+        u32.SetWindowPos(hwnd, -1, 0, 0, 0, 0, 0x1 | 0x2 | 0x40)      # فوق الجميع
+        u32.SetForegroundWindow(hwnd)
+        return True
+    except Exception:
+        log_error("front")
+        return False
+
+
+class InfoApi:
+    def __init__(self, ui, p):
+        self._ui, self._p = ui, p
+
+    def get(self):
+        p = self._p
+        return {"name": p["name"], "ext": p["ext"], "total": p["total"], "category": p["category"],
+                "folder": p["folder"], "probing": p["probing"], "error": p.get("error", "")}
+
+    def category(self, cat):
+        if cat in dict(CATEGORY_LABELS):
+            self._p["category"] = cat
+            self._p["user_cat"] = True
+            self._p["folder"] = self._ui.mgr.category_folder(cat)
+        return self._p["folder"]
+
+    def browse(self, current=""):
+        w = self._ui.windows.get(self._p["id"])
+        if w is None:
+            return ""
+        import webview
+        res = w.create_file_dialog(webview.FOLDER_DIALOG, directory=current or self._p["folder"])
+        if res:
+            self._p["folder"] = res[0] if isinstance(res, (list, tuple)) else res
+            return self._p["folder"]
+        return ""
+
+    def done(self, action, name="", folder="", never=False):
+        if action not in ("start", "later", "cancel"):
+            return False
+        self._ui.mgr.resolve(self._p["id"], action, name, folder, bool(never))
+        self._ui.close(self._p["id"])
+        return True
+
+
+class InfoDialogs:
+    """نافذة "معلومات الملف" قبل التحميل، مثل IDM: الرابط، الفئة، مكان الحفظ، الحجم."""
+
+    def __init__(self, mgr):
+        self.mgr = mgr
+        self.windows = {}
+        with open(resource("ui", "info.html"), encoding="utf-8") as f:
+            self.template = f.read()
+
+    def open(self, p):
+        import webview
+        data = {"id": p["id"], "url": p["url"], "kind": p["kind"], "name": p["name"], "ext": p["ext"],
+                "total": p["total"], "category": p["category"], "folder": p["folder"],
+                "probing": p["probing"], "categories": CATEGORY_LABELS}
+        html = self.template.replace("/*__DATA__*/null", json.dumps(data, ensure_ascii=False))
+        trace(f"info dialog for {p['kind']}")
+        w = webview.create_window(INFO_TITLE, html=html, js_api=InfoApi(self, p), width=620, height=400,
+                                  resizable=False, on_top=True, background_color="#061233")
+        self.windows[p["id"]] = w
+        pid = p["id"]
+
+        def closed():
+            self.windows.pop(pid, None)
+            self.mgr.resolve(pid, "cancel")     # أُغلقت بزر ×: إلغاء (لا أثر إن حُسم الطلب قبل ذلك)
+
+        def shown():
+            for delay in (0, 0.4):
+                t = threading.Timer(delay, lambda: bring_to_front(w, INFO_TITLE))
+                t.daemon = True
+                t.start()
+
+        try:
+            w.events.shown += shown
+            w.events.closed += closed
+        except Exception:
+            pass
+
+    def close(self, pid):
+        w = self.windows.pop(pid, None)
+        if w is not None:
+            try:
+                w.destroy()
+            except Exception:
+                pass
 
 
 def show_window():
@@ -2063,6 +2270,11 @@ def main():
         def start_notifier():
             mgr.notifier = Notifier()
             trace("notifier ready")
+            try:
+                mgr.info_ui = InfoDialogs(mgr)
+                trace("info dialogs ready")
+            except Exception:
+                log_error("info dialogs")
 
         window.events.loaded += start_notifier
         window.events.loaded += lambda: trace("page loaded")

@@ -1,0 +1,159 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="utf-8">
+<title>معلومات الملف</title>
+<style>
+  :root {
+    --bg: #061233; --panel: #0A1A45; --raise: #102457; --line: #1B2C60; --text: #EAF1FF;
+    --muted: #8FA3D1; --faint: #5E72A6; --cyan: #19B6FF; --blue: #1F6BFF; --bad: #FF7E95;
+    color-scheme: dark;
+  }
+  @media (prefers-color-scheme: light) {
+    :root { --bg: #EEF2FB; --panel: #FFFFFF; --raise: #F4F7FE; --line: #DCE3F3; --text: #071A4A;
+            --muted: #4B5D8C; --faint: #8A98BF; --cyan: #0A93E0; --blue: #1F5FE0; --bad: #D9334F; color-scheme: light; }
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    background: var(--bg); color: var(--text); user-select: none; overflow: hidden;
+    font: 14px/1.4 "Segoe UI Variable Text", "Segoe UI", Tahoma, sans-serif;
+    padding: 18px 20px 16px; display: flex; flex-direction: column; gap: 12px;
+  }
+  .grid { display: grid; grid-template-columns: 78px 1fr 112px; gap: 10px 12px; align-items: center; }
+  label { color: var(--muted); font-size: 13px; }
+  input[type=text], select {
+    width: 100%; font: inherit; color: var(--text); background: var(--panel);
+    border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; outline: none; min-width: 0;
+  }
+  input[type=text]:focus, select:focus { border-color: var(--cyan); }
+  input[readonly] { color: var(--muted); background: var(--raise); }
+  .ltr { direction: ltr; text-align: left; }
+  .pick { display: flex; gap: 8px; min-width: 0; }
+  .pick button { flex: none; }
+  .side {
+    grid-column: 3; grid-row: 1 / span 4; align-self: stretch; display: flex; flex-direction: column;
+    align-items: center; justify-content: center; gap: 8px; background: var(--panel);
+    border: 1px solid var(--line); border-radius: 12px; padding: 10px 6px; text-align: center;
+  }
+  .side svg { width: 46px; height: 46px; fill: none; stroke: var(--cyan); stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
+  .side[data-c="audio"] svg { stroke: #B48CFF; } .side[data-c="archive"] svg { stroke: #FFB547; }
+  .side[data-c="app"] svg { stroke: #3DDC97; } .side[data-c="doc"] svg { stroke: #FF8FB1; }
+  .side[data-c="image"] svg { stroke: #4FD8C4; } .side[data-c="other"] svg { stroke: var(--muted); }
+  .size { font-weight: 600; font-size: 15px; direction: ltr; unicode-bidi: isolate; }
+  .size.dim { color: var(--muted); font-weight: 400; font-size: 12.5px; direction: rtl; }
+  .check { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 13px; }
+  .check input { width: 16px; height: 16px; accent-color: var(--cyan); }
+  .err { color: var(--bad); font-size: 12.5px; min-height: 17px; unicode-bidi: plaintext; text-align: right;
+         white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .foot { display: flex; gap: 10px; margin-top: auto; align-items: center; }
+  button {
+    font: inherit; color: var(--text); background: var(--raise); border: 1px solid var(--line);
+    border-radius: 9px; padding: 9px 18px; cursor: pointer; white-space: nowrap;
+  }
+  button:hover { border-color: var(--faint); }
+  button.primary { border: 0; color: #fff; font-weight: 600; padding: 10px 26px; background: linear-gradient(90deg, var(--blue), var(--cyan)); }
+  :focus-visible { outline: 2px solid var(--cyan); outline-offset: 2px; }
+  .spacer { flex: 1; }
+</style>
+</head>
+<body>
+  <div class="grid">
+    <label for="url">الرابط</label>
+    <input type="text" id="url" class="ltr" readonly>
+    <div class="side" id="side"><svg viewBox="0 0 24 24"><use id="ico" href="#k-other"/></svg><div class="size dim" id="size">جارٍ القراءة…</div></div>
+
+    <label for="cat">الفئة</label>
+    <select id="cat"></select>
+
+    <label for="folder">حفظ في</label>
+    <div class="pick"><input type="text" id="folder" class="ltr" readonly><button type="button" id="browse" title="اختيار مجلد" aria-label="اختيار مجلد">…</button></div>
+
+    <label for="name">اسم الملف</label>
+    <input type="text" id="name" dir="auto">
+  </div>
+  <div class="err" id="err"></div>
+  <label class="check"><input type="checkbox" id="never"> لا تعرض هذه النافذة مرة أخرى (ابدأ التحميل مباشرة)</label>
+  <div class="foot">
+    <button class="primary" id="start">ابدأ التحميل</button>
+    <button id="later">حمّل لاحقاً</button>
+    <span class="spacer"></span>
+    <button id="cancel">إلغاء</button>
+  </div>
+
+  <svg width="0" height="0" style="position:absolute" aria-hidden="true">
+    <symbol id="k-video" viewBox="0 0 24 24"><rect x="3" y="6" width="13" height="12" rx="2.5"/><path d="m16 10.5 5-3v9l-5-3"/></symbol>
+    <symbol id="k-audio" viewBox="0 0 24 24"><path d="M9 18V6l11-2v12"/><circle cx="6.5" cy="18" r="2.5"/><circle cx="17.5" cy="16" r="2.5"/></symbol>
+    <symbol id="k-archive" viewBox="0 0 24 24"><rect x="4" y="3" width="16" height="18" rx="2.5"/><path d="M12 3v2m0 2v2m0 2v2m-1.5 2h3v3h-3z"/></symbol>
+    <symbol id="k-app" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2.5"/><path d="M3 8.5h18M6.5 6.2h.01M9 6.2h.01"/></symbol>
+    <symbol id="k-doc" viewBox="0 0 24 24"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8zM14 3v5h5M9 13h6M9 17h4"/></symbol>
+    <symbol id="k-image" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2.5"/><circle cx="9" cy="10" r="1.8"/><path d="m21 16-5-5-9 9"/></symbol>
+    <symbol id="k-other" viewBox="0 0 24 24"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8zM14 3v5h5"/></symbol>
+  </svg>
+
+<script>
+const D = /*__DATA__*/null || { url: "", kind: "file", name: "", ext: "", total: 0, category: "other", folder: "", probing: false, categories: [["other", "عام"]] };
+const $ = id => document.getElementById(id);
+let edited = false, folderPicked = false, sent = false;
+
+function size(n) { const u = ["B", "KB", "MB", "GB", "TB"]; let i = 0; while (n >= 1024 && i < 4) { n /= 1024; i++; } return (i ? n.toFixed(n < 10 ? 2 : 1) : n) + " " + u[i]; }
+function api() { return window.pywebview && window.pywebview.api; }
+
+function paint(d) {
+  $("side").dataset.c = d.category;
+  $("ico").setAttribute("href", "#k-" + d.category);
+  $("cat").value = d.category;
+  if (!folderPicked) $("folder").value = d.folder;
+  if (!edited) $("name").value = d.name + (d.kind === "file" ? "" : (d.ext || ""));
+  const s = $("size");
+  if (d.total) { s.textContent = size(d.total); s.className = "size"; }
+  else { s.textContent = d.probing ? "جارٍ القراءة…" : "الحجم غير معروف"; s.className = "size dim"; }
+  $("err").textContent = d.error ? "تعذّرت قراءة معلومات الملف: " + d.error : "";
+}
+
+for (const [v, label] of D.categories) $("cat").add(new Option(label, v));
+$("url").value = D.url; $("url").title = D.url;
+paint(D);
+
+$("name").addEventListener("input", () => { edited = true; });
+$("cat").addEventListener("change", async e => {
+  const cat = e.target.value;
+  $("side").dataset.c = cat; $("ico").setAttribute("href", "#k-" + cat);
+  D.category = cat;
+  folderPicked = false;
+  if (api()) { const f = await api().category(cat); if (f) $("folder").value = f; }
+});
+$("browse").addEventListener("click", async () => {
+  if (!api()) return;
+  const f = await api().browse($("folder").value);
+  if (f) { $("folder").value = f; folderPicked = true; }
+});
+
+function finish(action) {
+  if (sent || !api()) return;
+  sent = true;
+  api().done(action, $("name").value.trim(), $("folder").value, $("never").checked);
+}
+$("start").addEventListener("click", () => finish("start"));
+$("later").addEventListener("click", () => finish("later"));
+$("cancel").addEventListener("click", () => finish("cancel"));
+document.addEventListener("keydown", e => {
+  if (e.key === "Enter" && e.target.tagName !== "BUTTON" && e.target.tagName !== "SELECT") { e.preventDefault(); finish("start"); }
+  if (e.key === "Escape") finish("cancel");
+});
+
+// الحجم والاسم الحقيقي يصلان بعد لحظة من فتح النافذة
+async function poll() {
+  if (sent || !api()) return;
+  try {
+    const d = await api().get();
+    Object.assign(D, d);
+    paint(D);
+    if (d.probing) setTimeout(poll, 400);
+  } catch (e) { setTimeout(poll, 600); }
+}
+function begin() { $("start").focus(); if (D.probing) poll(); }
+if (api()) begin(); else window.addEventListener("pywebviewready", begin);
+</script>
+</body>
+</html>

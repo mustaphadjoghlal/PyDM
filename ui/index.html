@@ -374,6 +374,7 @@ dialog form { max-height: 86vh; overflow-y: auto; }
         </select>
       </label>
     </div>
+    <label class="check"><input type="checkbox" id="set-ask"> نافذة «معلومات الملف» قبل كل تحميل (الاسم، المجلد، الحجم)</label>
     <label class="check"><input type="checkbox" id="set-cats"> فرز الملفات في مجلدات: Video و Music و Compressed و Programs و Documents</label>
     <label class="check"><input type="checkbox" id="set-compat"> فيديو متوافق مع البريمير وبرامج المونتاج (H.264)</label>
     <p class="note">يوتيوب يعطي H.264 حتى 1080p. أطفئه لأعلى جودة متاحة (4K) بترميزات لا يقبلها البريمير.</p>
@@ -654,6 +655,7 @@ $("#open-settings").addEventListener("click", () => {
   lim.value = s.speed_limit;
   $("#set-done").value = s.when_done;
   $("#set-cats").checked = s.categories;
+  $("#set-ask").checked = s.ask;
   $("#set-compat").checked = s.compat;
   $("#set-notify").checked = s.notify;
   dlg.showModal();
@@ -663,7 +665,7 @@ $("#pick-folder").addEventListener("click", async () => {
 });
 $("#set-conns").addEventListener("input", e => $("#conns-out").textContent = e.target.value);
 $("#set-conns").addEventListener("change", e => call("set_conns", +e.target.value).then(refresh));
-for (const [id, key] of [["#set-compat", "compat"], ["#set-notify", "notify"], ["#set-cats", "categories"]])
+for (const [id, key] of [["#set-compat", "compat"], ["#set-notify", "notify"], ["#set-cats", "categories"], ["#set-ask", "ask"]])
   $(id).addEventListener("change", e => call("set_option", key, e.target.checked).then(refresh));
 $("#set-parallel").addEventListener("input", e => $("#parallel-out").textContent = e.target.value);
 $("#set-parallel").addEventListener("change", e => call("set_option", "max_parallel", +e.target.value).then(refresh));
