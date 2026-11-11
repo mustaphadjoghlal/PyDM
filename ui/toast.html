@@ -7,29 +7,32 @@
   html, body { height: 100%; overflow: hidden; user-select: none; }
   body {
     background: #03154A; color: #EAF1FF;
-    font: 13px/1.4 "Segoe UI Variable Text", "Segoe UI", Tahoma, sans-serif;
-    display: grid; grid-template-columns: 44px 1fr auto; gap: 12px; align-items: center;
-    padding: 14px 14px 16px 12px; position: relative; cursor: default;
+    font: 14px/1.4 "Segoe UI Variable Text", "Segoe UI", Tahoma, sans-serif;
+    display: grid; grid-template-columns: 56px 1fr auto; gap: 14px; align-items: center;
+    padding: 16px 16px 20px 14px; position: relative; cursor: default;
+    border: 1px solid rgba(25,182,255,.55);
   }
   body::after {   /* خط السرعة من الأيقونة: يظهر في الأسفل ويتلوّن حسب الحالة */
-    content: ""; position: absolute; inset-inline: 0; bottom: 0; height: 3px;
+    content: ""; position: absolute; inset-inline: 0; bottom: 0; height: 5px;
     background: linear-gradient(270deg, #19B6FF, #1F6BFF);
   }
   body.done::after { background: #3DDC97; }
   body.error::after { background: #FF5C7A; }
-  body.start::after { transform-origin: right; animation: run 7s linear forwards; }
+  body.start::after { transform-origin: right; animation: run 8s linear forwards; }
+  body.done { border-color: rgba(61,220,151,.7); }
+  body.error { border-color: rgba(255,92,122,.75); }
   @keyframes run { from { transform: scaleX(1); } to { transform: scaleX(0); } }
-  img { width: 44px; height: 44px; border-radius: 11px; }
-  .t { font-size: 12.5px; color: #8FA3D1; display: flex; gap: 8px; }
+  img { width: 56px; height: 56px; border-radius: 14px; }
+  .t { font-size: 14px; color: #8FA3D1; display: flex; gap: 8px; }
   .t b { color: #EAF1FF; font-weight: 600; }
   body.done .t b { color: #3DDC97; }
   body.error .t b { color: #FF7E95; }
-  .n { font-weight: 600; font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 2px; }
+  .n { font-weight: 600; font-size: 16px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 2px; }
   .e { color: #FF9FB0; font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 2px; }
   .acts { display: flex; flex-direction: column; gap: 6px; align-self: stretch; justify-content: center; }
   button {
     font: inherit; color: #EAF1FF; background: rgba(255,255,255,.08); border: 0; border-radius: 7px;
-    padding: 5px 12px; cursor: pointer; white-space: nowrap;
+    padding: 7px 16px; cursor: pointer; white-space: nowrap; font-size: 13.5px;
   }
   button:hover { background: rgba(25,182,255,.25); }
   button.primary { background: linear-gradient(90deg, #1F6BFF, #19B6FF); font-weight: 600; }

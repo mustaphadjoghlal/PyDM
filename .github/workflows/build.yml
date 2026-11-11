@@ -41,11 +41,34 @@ jobs:
               if ($r.Content -match '"ui": true') { $ok = $true; break }
             } catch { Write-Host "ping failed: $($_.Exception.Message)" }
           }
+          # الإشعار: نحمّل ملفاً صغيراً ثم نتأكد أن نافذة الإشعار ظاهرة وفوق كل النوافذ
+          $toast = 'not checked'
+          if ($ok) {
+            Add-Type -Namespace W -Name U -MemberDefinition @"
+              [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern IntPtr FindWindowW(string c, string t);
+              [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr h);
+              [DllImport("user32.dll", EntryPoint="GetWindowLongPtrW")] public static extern IntPtr GetWindowLongPtr(IntPtr h, int i);
+          "@
+            Invoke-WebRequest http://127.0.0.1:9614/add -Method Post -ContentType 'application/json' -Headers @{Origin='chrome-extension://ci'} -Body '{"url":"http://127.0.0.1:9614/ping"}' -UseBasicParsing | Out-Null
+            $toast = 'missing'
+            for ($i = 0; $i -lt 40; $i++) {
+              Start-Sleep -Milliseconds 500
+              $h = [W.U]::FindWindowW($null, 'PyDM-Toast')
+              if ($h -ne [IntPtr]::Zero) {
+                $top = ([W.U]::GetWindowLongPtr($h, -20).ToInt64() -band 0x8) -ne 0
+                $vis = [W.U]::IsWindowVisible($h)
+                $toast = "visible=$vis topmost=$top"
+                if ($vis -and $top) { break }
+              }
+            }
+            Write-Host "notification window: $toast"
+          }
           Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
           foreach ($f in 'startup.log','error.log','crash.log') {
             $path = "$env:USERPROFILE\.pydm\$f"
             if (Test-Path $path) { Write-Host "===== $f"; Get-Content $path }
           }
+          if ($ok -and $toast -ne 'visible=True topmost=True') { throw "notification window is not on top: $toast" }
           if (-not $ok) {
             Write-Host "===== .NET / application errors from the Windows event log"
             Get-WinEvent -FilterHashtable @{LogName='Application'; StartTime=(Get-Date).AddMinutes(-5)} -ErrorAction SilentlyContinue |

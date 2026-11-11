@@ -67,6 +67,16 @@ d = pydm.YtdlpDownload(URL, out, HDR, 4, "T"); d.start(); time.sleep(1.0); d.can
 check("cancel", d.status == "canceled" and d.proc is None)
 os.environ["FAKE_DELAY"] = "0.05"
 
+# same video again → "name 1", then "name 2"; work folders removed
+before = set(os.listdir(out))
+d1 = pydm.YtdlpDownload(URL, out, HDR, 4, "T"); d1.start(); wait(d1)
+d2 = pydm.YtdlpDownload(URL, out, HDR, 4, "T"); d2.start(); wait(d2)
+new = sorted(set(os.listdir(out)) - before)
+import re as _re
+check("duplicate names get a number", d1.status == d2.status == "done" and len({d.path, d1.path, d2.path}) == 3 and all(_re.fullmatch(r"عنوان abc \d+\.mp4", x.name) for x in (d1, d2)) and all(os.path.isfile(x.path) for x in (d1, d2)), (d1.name, d2.name))
+check("no work folders left behind", not any(n.startswith(".pydm-") for n in os.listdir(out)), os.listdir(out))
+check("work folder not persisted after done", d1.to_dict()["work"] == "")
+
 # compat off -> no codec preference
 d = pydm.YtdlpDownload(URL, out, HDR, 4, "T"); d.compat = False; d.start(); wait(d)
 check("compat off: best quality, any codec", "-S" not in last_call())

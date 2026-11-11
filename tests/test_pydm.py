@@ -66,6 +66,10 @@ for f in ("direct.mp4", "song.mp3"):
     same = os.path.exists(d.path) and open(d.path,"rb").read() == open(os.path.join(WWW, f),"rb").read()
     check(f"direct {f}", st == "done" and same, st + " " + d.error)
 
+# duplicate file name → "song 1.mp3"
+d = pydm.Download(B + "song.mp3", out, HDR, 4); d.start(); wait(d)
+check("duplicate direct download renamed 'song 1.mp3'", d.status == "done" and d.name == "song 1.mp3" and os.path.exists(os.path.join(out, "song.mp3")), d.name)
+
 # 2. HLS master -> picks hi variant, no ffmpeg -> .ts
 pydm.find_ffmpeg = lambda: None
 d = pydm.StreamDownload(B + "master.m3u8", out, HDR, 4, "فيديو تجريبي"); d.start(); st = wait(d)

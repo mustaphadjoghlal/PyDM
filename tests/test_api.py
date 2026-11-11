@@ -81,7 +81,7 @@ check2("fast download: no 'started' notice", len(created) == 0, len(created))
 wait(lambda: d.status == "done"); a3.state()
 check2("done toast with file name", len(created) == 1 and '"event": "done"' in created[0].html and '"name": "song.mp3"' in created[0].html)
 w = created[-1].k
-check2("toast placed bottom-right, frameless, no focus", w["x"] == 1920 - 380 - 16 and w["y"] == 1080 - 104 - 64 and w["frameless"] and w["on_top"] and w["focus"] is False)
+check2("toast placed bottom-right, frameless, no focus", w["x"] == 1920 - 440 - 16 and w["y"] == 1080 - 128 - 64 and w["title"] == "PyDM-Toast" and w["frameless"] and w["on_top"] and w["focus"] is False)
 check2("done toast has the file path", json.dumps(d.path)[1:-1] in created[0].html)
 from http.server import BaseHTTPRequestHandler
 class Slow(BaseHTTPRequestHandler):

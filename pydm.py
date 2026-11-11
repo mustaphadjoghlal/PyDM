@@ -142,7 +142,7 @@ def unique_path(path):
     i = 1
     while (os.path.exists(path) or os.path.exists(path + ".part")
            or os.path.exists(path + ".parts")):
-        path = f"{base} ({i}){ext}"
+        path = f"{base} {i}{ext}"
         i += 1
     return path
 
@@ -968,6 +968,7 @@ class YtdlpDownload(Download):
         self.media = "audio" if media == "audio" else "video"
         self.quality = "best"     # best | 2160 | 1440 | 1080 | 720 | 480 | 360
         self.prefix = ""          # ترقيم عناصر القائمة: "01 - "
+        self.work = ""            # مجلد عمل مؤقت: يمنع التصادم مع ملف موجود بالاسم نفسه
         self.bytes_done = 0
         self.proc = None
         self.cookies = []      # من المتصفح، في الذاكرة فقط (لا تُحفظ على القرص)
@@ -976,7 +977,8 @@ class YtdlpDownload(Download):
 
     def to_dict(self):
         d = super().to_dict()
-        d.update(kind="ytdlp", title=self.title, media=self.media, quality=self.quality, prefix=self.prefix)
+        d.update(kind="ytdlp", title=self.title, media=self.media, quality=self.quality, prefix=self.prefix,
+                 work=self.work)
         return d
 
     @classmethod
@@ -985,6 +987,7 @@ class YtdlpDownload(Download):
         o.title = d.get("title", "")
         o.media = "audio" if d.get("media") == "audio" else "video"
         o.quality = d.get("quality") if d.get("quality") in QUALITIES else "best"
+        o.work = str(d.get("work") or "")
         o.prefix = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "", str(d.get("prefix") or ""))[:12]
         if o.status == "done":
             o.bytes_done = o.total
@@ -1063,12 +1066,33 @@ class YtdlpDownload(Download):
                 pass
             self._cookie_file = ""
 
+    def _workdir(self):
+        if not self.work:
+            self.work = os.path.join(self.folder, ".pydm-" + os.urandom(4).hex())
+        os.makedirs(self.work, exist_ok=True)
+        if sys.platform.startswith("win"):
+            try:
+                import ctypes
+                ctypes.windll.kernel32.SetFileAttributesW(self.work, 2)   # مخفي
+            except Exception:
+                pass
+        return self.work
+
+    def _finish_file(self):
+        """ينقل الملف من مجلد العمل إلى مجلد التحميل؛ إن وُجد ملف بالاسم نفسه يصير "الاسم 1"."""
+        final = unique_path(os.path.join(self.folder, os.path.basename(self.path)))
+        os.replace(self.path, final)
+        self.path = final
+        self.name = os.path.basename(final)
+        shutil.rmtree(self.work, ignore_errors=True)
+        self.work = ""
+
     def _command(self):
         exe = find_ytdlp()
         if not exe:
             raise IOError("يحتاج yt-dlp: ضع yt-dlp.exe بجانب PyDM.exe")
         ff = find_ffmpeg()
-        tpl = os.path.join(self.folder.replace("%", "%%"),
+        tpl = os.path.join(self._workdir().replace("%", "%%"),
                            self.prefix.replace("%", "%%") + "%(title).150B.%(ext)s")
         cmd = exe + ["--no-playlist", "--newline", "--no-colors", "--progress",
                      "--progress-template", self.TEMPLATE,
@@ -1147,6 +1171,7 @@ class YtdlpDownload(Download):
                 raise IOError(err)
             if not (self.path and os.path.isfile(self.path)):
                 raise IOError("لم يُنشأ الملف")
+            self._finish_file()
             self.total = os.path.getsize(self.path)
             self.bytes_done = self.total
             self.status = "done"
@@ -1156,9 +1181,9 @@ class YtdlpDownload(Download):
 
     def _rm_part(self):
         try:
-            for ext in (".part", ".ytdl"):
-                if self.path and os.path.exists(self.path + ext):
-                    os.remove(self.path + ext)
+            if self.work:
+                shutil.rmtree(self.work, ignore_errors=True)
+                self.work = ""
         except Exception:
             pass
 
@@ -1794,7 +1819,47 @@ class Api:
         return True
 
 
-TOAST_W, TOAST_H = 380, 104
+TOAST_W, TOAST_H = 440, 128
+TOAST_TITLE = "PyDM-Toast"
+
+
+def force_topmost(win, x=None, y=None):
+    """يرفع نافذة الإشعار فوق كل النوافذ دون سحب التركيز من البرنامج الذي تعمل عليه."""
+    if not sys.platform.startswith("win"):
+        return False
+    try:
+        import ctypes
+        u32 = ctypes.windll.user32
+        hwnd = 0
+        try:
+            hwnd = int(win.native.Handle.ToInt64())
+        except Exception:
+            hwnd = u32.FindWindowW(None, TOAST_TITLE)
+        if not hwnd:
+            return False
+        SWP_NOSIZE, SWP_NOMOVE, SWP_NOACTIVATE, SWP_SHOWWINDOW = 0x1, 0x2, 0x10, 0x40
+        flags = SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW | (SWP_NOMOVE if x is None else 0)
+        u32.ShowWindow(hwnd, 4)                                   # SW_SHOWNOACTIVATE
+        u32.SetWindowPos(hwnd, -1, int(x or 0), int(y or 0), 0, 0, flags)   # HWND_TOPMOST
+        return True
+    except Exception:
+        log_error("topmost")
+        return False
+
+
+def work_area():
+    """مساحة الشاشة بلا شريط المهام (بالبكسل)، أو None."""
+    if not sys.platform.startswith("win"):
+        return None
+    try:
+        import ctypes
+        from ctypes import wintypes
+        r = wintypes.RECT()
+        if ctypes.windll.user32.SystemParametersInfoW(0x30, 0, ctypes.byref(r), 0):   # SPI_GETWORKAREA
+            return r.left, r.top, r.right, r.bottom
+    except Exception:
+        pass
+    return None
 
 
 class ToastApi:
@@ -1838,6 +1903,13 @@ class Notifier:
         except Exception:
             return None, None
 
+    def _raise(self, w):
+        # نكرر الرفع قليلاً: بعض النوافذ (ملء الشاشة، المتصفح) تعود فوق الإشعار عند ظهوره
+        for delay in (0, 0.3, 1.0):
+            t = threading.Timer(delay, lambda: self.win is w and force_topmost(w))
+            t.daemon = True
+            t.start()
+
     def close(self):
         with self.lock:
             w, self.win = self.win, None
@@ -1861,12 +1933,16 @@ class Notifier:
         self.close()      # إشعار واحد في كل مرة: الجديد يحل محل القديم
         x, y = self._pos()
         w = webview.create_window(
-            "PyDM", html=html, js_api=self.api, width=TOAST_W, height=TOAST_H, x=x, y=y,
+            TOAST_TITLE, html=html, js_api=self.api, width=TOAST_W, height=TOAST_H, x=x, y=y,
             resizable=False, frameless=True, on_top=True, focus=False, shadow=True,
             background_color="#03154A")
+        try:
+            w.events.shown += lambda: self._raise(w)
+        except Exception:
+            pass
         with self.lock:
             self.win = w
-            self.timer = threading.Timer(7 if event == "start" else 12, self.close)
+            self.timer = threading.Timer(8 if event == "start" else 15, self.close)
             self.timer.daemon = True
             self.timer.start()
 
