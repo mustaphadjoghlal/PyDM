@@ -157,10 +157,31 @@ jobs:
             dist/PyDM-portable.zip
             dist/PyDM-extension.zip
 
-      - name: Publish release (on tags)
-        if: startsWith(github.ref, 'refs/tags/v')
+      # كل دفع إلى main يحدّث إصدار النسخة الحالية (الرقم من installer/PyDM.iss)
+      - name: Read version
+        id: ver
+        shell: pwsh
+        run: |
+          $m = Select-String -Path installer\PyDM.iss -Pattern '#define AppVersion "([^"]+)"' | Select-Object -First 1
+          "version=$($m.Matches[0].Groups[1].Value)" >> $env:GITHUB_OUTPUT
+
+      - name: Publish release
+        if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: v${{ steps.ver.outputs.version }}
+          target_commitish: ${{ github.sha }}
+          name: PyDM ${{ steps.ver.outputs.version }}
+          make_latest: true
+          body: |
+            ## التثبيت
+            1. حمّل `PyDM-Setup.exe` وشغّله. لا يحتاج صلاحيات المدير، ويضم yt-dlp وffmpeg وDeno.
+               - للتثبيت الصامت: ضع `install-silent.cmd` بجانبه وشغّله.
+            2. إضافة المتصفح: بعد التثبيت تجدها في `%LOCALAPPDATA%\Programs\PyDM\extension`.
+               من `chrome://extensions` فعّل وضع المطوّر ثم «تحميل إضافة غير مضغوطة» واختر المجلد.
+               عند التحديث اضغط إعادة التحميل ↻ على الإضافة.
+
+            `PyDM-portable.zip` نسخة تعمل بلا تثبيت، و`PyDM-extension.zip` الإضافة وحدها.
           files: |
             dist/PyDM-Setup.exe
             dist/install-silent.cmd
