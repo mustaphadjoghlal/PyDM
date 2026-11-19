@@ -247,6 +247,9 @@ YTDLP_HOSTS = re.compile(
     r"twitter\.com|x\.com|vimeo\.com|dailymotion\.com|twitch\.tv|soundcloud\.com|reddit\.com)$", re.I)
 
 
+META_HOSTS = re.compile(r"(^|\.)(facebook\.com|fb\.watch|instagram\.com)$", re.I)
+
+
 def is_ytdlp_url(url):
     """صفحة فيديو في موقع معروف (وليس ملفاً مباشراً)."""
     p = urllib.parse.urlparse(url)
@@ -1037,6 +1040,10 @@ class YtdlpDownload(Download):
         return bool(re.search(r"(^|\.)(youtube\.com|youtube-nocookie\.com|youtu\.be)$",
                               urllib.parse.urlparse(self.url).hostname or ""))
 
+    def _is_meta(self):
+        """فيسبوك وإنستغرام: أعلى جودة غالباً VP9/AV1 فقط، و H.264 فيهما بدقة أقل."""
+        return bool(META_HOSTS.search(urllib.parse.urlparse(self.url).hostname or ""))
+
     def _write_cookies(self):
         """ملف كوكيز بصيغة Netscape لـ yt-dlp. فيسبوك وإنستغرام يتطلبان غالباً تسجيل الدخول."""
         if not self.cookies or self._is_youtube():
@@ -1106,6 +1113,9 @@ class YtdlpDownload(Download):
         ref = self.headers.get("Referer")
         if ref and not self._is_youtube():
             cmd += ["--referer", ref]
+        ua = self.headers.get("User-Agent")
+        if ua and self._is_meta():
+            cmd += ["--user-agent", ua]      # نفس متصفح الكوكيز: الجلسة لا تُرفض ولا تُخفَّض الجودة
         ck = self._write_cookies()
         if ck:
             cmd += ["--cookies", ck]
@@ -1118,7 +1128,10 @@ class YtdlpDownload(Download):
             cmd += ["-x", "--audio-format", "mp3"] if ff else ["-f", "ba/b"]
         else:
             res = "res" if self.quality == "best" else f"res:{self.quality}"   # res:720 = أفضل جودة لا تتجاوز 720
-            if self.compat:
+            if self.compat and self._is_meta():
+                # الدقة أولاً ثم H.264 عند التساوي؛ وإن جاءت أعلى دقة VP9/AV1 تُحوَّل بعد التحميل
+                cmd += ["-S", f"{res},vcodec:h264,acodec:m4a"]
+            elif self.compat:
                 # H.264 + AAC أولاً: VP9/AV1/Opus داخل mp4 يرفضها البريمير ("unsupported compression type")
                 cmd += ["-S", f"vcodec:h264,{res},acodec:m4a"]
             elif res != "res":
@@ -1175,6 +1188,14 @@ class YtdlpDownload(Download):
                 raise IOError(err)
             if not (self.path and os.path.isfile(self.path)):
                 raise IOError("لم يُنشأ الملف")
+            if self.media == "video" and self.compat and self._is_meta():
+                self._to_h264(ev)
+                if self.cancelled:
+                    self._rm_part()
+                    self.status = "canceled"
+                    return
+                if ev.is_set():
+                    return
             self._finish_file()
             self.total = os.path.getsize(self.path)
             self.bytes_done = self.total
@@ -1182,6 +1203,55 @@ class YtdlpDownload(Download):
         except Exception as e:
             self.error = str(e)
             self.status = "error"
+
+    @staticmethod
+    def _codecs(ff, path):
+        """(ترميز الفيديو، ترميز الصوت) من مخرجات ffmpeg -i، مثل ("vp9", "opus")."""
+        try:
+            r = subprocess.run([ff, "-hide_banner", "-i", path], capture_output=True,
+                               stdin=subprocess.DEVNULL, creationflags=NOWIN, timeout=60)
+            err = r.stderr.decode("utf-8", "replace")
+        except Exception:
+            return "", ""
+        v = re.search(r"Stream #.*?Video:\s*(\w+)", err)
+        a = re.search(r"Stream #.*?Audio:\s*(\w+)", err)
+        return (v.group(1).lower() if v else ""), (a.group(1).lower() if a else "")
+
+    def _to_h264(self, ev):
+        """أعلى دقة في فيسبوك/إنستغرام قد تكون VP9/AV1: نحوّلها إلى H.264 بالدقة نفسها للبريمير.
+        إن فشل التحويل يبقى الملف الأصلي (بأعلى جودة) بدل خسارة التحميل."""
+        ff = find_ffmpeg()
+        if not ff:
+            return
+        vc, ac = self._codecs(ff, self.path)
+        if not vc or vc == "h264":
+            return
+        out = os.path.splitext(self.path)[0] + ".h264.mp4"
+        cmd = [ff, "-y", "-hide_banner", "-loglevel", "error", "-i", self.path,
+               "-map", "0:v:0", "-map", "0:a:0?",
+               "-c:v", "libx264", "-preset", "veryfast", "-crf", "18", "-pix_fmt", "yuv420p",
+               "-c:a"] + (["copy"] if ac in ("aac", "") else ["aac", "-b:a", "192k"]) + \
+              ["-movflags", "+faststart", out]
+        try:
+            proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                    stdin=subprocess.DEVNULL, creationflags=NOWIN)
+            self.proc = proc
+            while proc.poll() is None:
+                if ev.is_set():
+                    proc.kill()
+                    break
+                time.sleep(0.3)
+            proc.wait()
+        except Exception:
+            proc = None
+        self.proc = None
+        if proc and proc.returncode == 0 and os.path.isfile(out) and os.path.getsize(out) > 0:
+            os.replace(out, self.path)
+        else:
+            try:
+                os.remove(out)
+            except Exception:
+                pass
 
     def _rm_part(self):
         try:

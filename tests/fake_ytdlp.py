@@ -28,5 +28,8 @@ total = 1000000
 for i in range(1, 11):
     print(f"PYDM {i*100000} {total} NA {123456}", flush=True)
     time.sleep(float(os.environ.get("FAKE_DELAY", "0.05")))
-open(path, "wb").write(b"x" * total)
+if os.environ.get("FAKE_SRC"):
+    import shutil; shutil.copy(os.environ["FAKE_SRC"], path)
+else:
+    open(path, "wb").write(b"x" * total)
 print("PYDMFILE " + path, flush=True)

@@ -36,7 +36,9 @@ async function handoff(url, referrer, meta) {
   if (meta && meta.kind === "ytdlp") {
     // فيسبوك وإنستغرام يحتاجان تسجيل الدخول: نرسل كوكيز الموقع ليكتبها PyDM في ملف لـ yt-dlp
     try {
-      body.cookies = (await chrome.cookies.getAll({ url })).map(c => ({
+      // fb.watch رابط مختصر: جلسة الدخول محفوظة في كوكيز facebook.com
+      const ckUrl = /^https?:\/\/(www\.)?fb\.watch\//i.test(url) ? "https://www.facebook.com/" : url;
+      body.cookies = (await chrome.cookies.getAll({ url: ckUrl })).map(c => ({
         name: c.name, value: c.value, domain: c.domain, path: c.path, secure: c.secure,
         httpOnly: c.httpOnly, expirationDate: c.expirationDate || 0
       }));
