@@ -59,6 +59,9 @@
     .main:hover, .more:hover { background: rgba(25,182,255,.18); }
     .more { padding: 0 9px; border-inline-start: 1px solid rgba(255,255,255,.14); }
     .more svg { width: 12px; height: 12px; }
+    .close { padding: 0 8px; border-inline-end: 1px solid rgba(255,255,255,.14); color: #8FA3D1; }
+    .close svg { width: 11px; height: 11px; }
+    .close:hover { background: rgba(180,35,62,.55); color: #fff; }
     .menu {
       display: none; position: absolute; top: 40px; right: 0; min-width: 230px; max-width: 340px; direction: rtl;
       background: #0A1A45; border-radius: 10px; padding: 5px; box-shadow: 0 10px 30px rgba(0,8,40,.5), 0 0 0 1px rgba(255,255,255,.08);
@@ -74,6 +77,7 @@
   </style>
   <div class="wrap">
   <div class="pill" part="pill">
+    <button class="close" title="إخفاء الزر عن هذا الفيديو" aria-label="إغلاق"><svg viewBox="0 0 12 12"><path d="M2.5 2.5l7 7m0-7-7 7" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></button>
     <button class="main" title="تحميل بواسطة PyDM">${ICON}<span class="txt">تحميل</span></button>
     <button class="more" title="خيارات التحميل" aria-label="خيارات التحميل"><svg viewBox="0 0 12 12"><path d="M2.5 4.5 6 8l3.5-3.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></button>
   </div>
@@ -83,6 +87,7 @@
   const mainBtn = root.querySelector(".main"), txt = root.querySelector(".txt");
 
   let target = null, hideTimer = 0, raf = 0, busy = false;
+  const dismissed = new WeakSet();   // فيديوهات أغلق المستخدم زرها: لا يعود حتى تحديث الصفحة
 
   function mount() {
     const fs = document.fullscreenElement;
@@ -102,7 +107,7 @@
   }
 
   function show(v) {
-    if (!enabled || busy && v !== target) return;
+    if (!enabled || dismissed.has(v) || busy && v !== target) return;
     clearTimeout(hideTimer);
     if (target !== v) { target = v; closeMenu(); setLabel("تحميل"); }
     mount();
@@ -288,6 +293,11 @@
     if (busy || !target) return;
     closeMenu();
     send(await bestAction(target));
+  });
+  root.querySelector(".close").addEventListener("click", e => {
+    e.stopPropagation(); e.preventDefault();
+    if (target) dismissed.add(target);
+    closeMenu(); busy = false; hide(true);
   });
   root.querySelector(".more").addEventListener("click", e => { e.stopPropagation(); e.preventDefault(); openMenu(); });
   host.addEventListener("mouseenter", () => clearTimeout(hideTimer));
