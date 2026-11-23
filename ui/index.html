@@ -580,9 +580,14 @@ function render() {
 async function call(fn, ...args) {
   try { return await api[fn](...args); } catch (e) { toast("تعذّر تنفيذ الأمر"); return null; }
 }
+let refreshing = false;   // لا نرسل طلب تحديث جديداً قبل أن يعود السابق (كانت الطلبات تتراكم)
 async function refresh() {
-  const s = await call("state");
-  if (s) { state = s; render(); if (s.notice) toast(s.notice); }
+  if (refreshing) return;
+  refreshing = true;
+  try {
+    const s = await call("state");
+    if (s) { state = s; render(); if (s.notice) toast(s.notice); }
+  } finally { refreshing = false; }
 }
 
 // ---------- إضافة رابط

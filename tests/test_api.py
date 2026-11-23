@@ -58,8 +58,17 @@ check("clipboard safe on linux", api.clipboard() == "")
 import types
 created = []
 class FakeWin:
-    def __init__(s, **k): s.k = k; s.html = k.get("html"); s.js_api = k.get("js_api"); s.destroyed = False
+    def __init__(s, **k):
+        s.k = k; s.html = k.get("html"); s.js_api = k.get("js_api"); s.destroyed = False
+        s.events = types.SimpleNamespace(shown=threading.Event(), closed=Ev(), __iadd__=None)
+        s.events.shown.set(); s.events.shown.__class__ = ShownEv
     def destroy(s): s.destroyed = True
+    def load_html(s, html): s.html = html
+class Ev:
+    def __iadd__(s, f): return s
+class ShownEv(type(threading.Event())):
+    def __iadd__(s, f): return s
+pydm.GUI.sync = True      # نوافذ الاختبار تُنشأ فوراً
 fake = types.ModuleType("webview")
 fake.screens = [types.SimpleNamespace(width=1920, height=1080)]
 def create_window(title, url=None, html=None, js_api=None, **k):
@@ -94,12 +103,12 @@ class Slow(BaseHTTPRequestHandler):
 slow_srv = ThreadingHTTPServer(("127.0.0.1", 8767), Slow); threading.Thread(target=slow_srv.serve_forever, daemon=True).start()
 slow = m3.add("http://127.0.0.1:8767/big.iso")
 time.sleep(1.8)
-check2("slow download: 'started' notice replaces the old one", len(created) == 2 and created[0].destroyed and '"event": "start"' in created[1].html)
+check2("slow download: 'started' notice reuses the same toast (no destroy/create)", len(created) == 1 and not created[0].destroyed and '"event": "start"' in created[0].html)
 slow.cancel()
-api_t = created[1].js_api
-check2("toast close works", api_t.close() and created[1].destroyed and m3.notifier.win is None)
+api_t = created[0].js_api
+check2("toast close works", api_t.close() and created[0].destroyed and m3.notifier.win is None)
 m3.cfg["notify"] = False; d2 = m3.add(B + "nope.bin"); wait(lambda: d2.status == "error", 40); time.sleep(1.6); a3.state()
-check2("no toasts when notifications are off", len(created) == 2)
+check2("no toasts when notifications are off", len(created) == 1)
 m3.cfg["notify"] = True; a3.resume(d2.uid); time.sleep(0.5); wait(lambda: d2.status == "error", 40); a3.state()   # الحالة نفسها، لكن محاولة جديدة
 check2("error toast", '"event": "error"' in created[-1].html)
 d3 = pydm.YtdlpDownload("https://x.com/1", "/tmp", {}, 4)

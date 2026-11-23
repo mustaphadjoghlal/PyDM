@@ -72,6 +72,65 @@ MIN_STEAL = 1024 * 1024  # أصغر جزء يستحق أن يُقسم لاتصا
 UI = {"ready": False, "window": None}  # حالة النافذة: يُستخدم في /ping و /show
 
 
+class GuiWorker:
+    """كل عمليات النوافذ الثانوية (الإشعار ونافذة معلومات الملف): إنشاء وإغلاق ورفع، تمر من خيط واحد بالترتيب.
+    سبب التجمّد السابق: عدة خيوط (المؤقتات، خيط الواجهة، خيط الحفظ) كانت تنشئ وتهدم نوافذ WebView2
+    في الوقت نفسه، وأحياناً تهدم نافذة قبل أن يكتمل إنشاؤها، فيتوقف خيط الواجهة إلى الأبد."""
+
+    def __init__(self):
+        self.q = queue.Queue()
+        self.stopped = False
+        self.sync = False          # للاختبارات: تنفيذ فوري في الخيط نفسه
+        self._thread = None
+        self._lock = threading.Lock()
+
+    def _ensure(self):
+        with self._lock:
+            if self._thread is None:
+                self._thread = threading.Thread(target=self._loop, daemon=True, name="pydm-gui")
+                self._thread.start()
+
+    def call(self, fn, *args):
+        if self.stopped:
+            return
+        if self.sync:
+            try:
+                fn(*args)
+            except Exception:
+                log_error("gui")
+            return
+        self._ensure()
+        self.q.put((fn, args))
+
+    def later(self, delay, fn, *args):
+        if self.sync:
+            return self.call(fn, *args) if delay <= 0 else None
+        t = threading.Timer(delay, self.call, args=(fn,) + args)
+        t.daemon = True
+        t.start()
+
+    def _loop(self):
+        while True:
+            fn, args = self.q.get()
+            if self.stopped:
+                continue
+            try:
+                fn(*args)
+            except Exception:
+                log_error("gui")
+
+
+GUI = GuiWorker()
+
+
+def wait_shown(w, timeout=10):
+    """لا نهدم نافذة WebView2 ولا نغيّر محتواها قبل أن يكتمل ظهورها: هذا يجمّد البرنامج."""
+    try:
+        return w.events.shown.wait(timeout)
+    except Exception:
+        return True
+
+
 # ----------------------------------------------------------------- أدوات
 def load_json(path, default):
     try:
@@ -1508,6 +1567,8 @@ class Manager:
         self.notifier = None                  # يُعيَّن عند فتح النافذة
         self._last_status = {}
         self.lock = threading.RLock()
+        self._pump_lock = threading.Lock()        # pump واحدة في كل مرة (كانت تعمل من خيطين معاً)
+        self._env = (0, None)                     # (وقت آخر فحص، الأدوات وبدء التشغيل)
         self._uid = 0
         for d in load_json(LIST_FILE, []):
             try:
@@ -1575,8 +1636,10 @@ class Manager:
         else:
             name = filename_from(None, url)
             cat, ext = category_for_name(name), ""
-        self._uid += 1
-        p = {"id": "p" + str(self._uid), "url": url, "headers": headers, "meta": meta, "kind": kind,
+        with self.lock:
+            self._uid += 1
+            pid = "p" + str(self._uid)
+        p = {"id": pid, "url": url, "headers": headers, "meta": meta, "kind": kind,
              "name": name, "ext": ext, "total": 0, "category": cat, "folder": self.category_folder(cat),
              "probing": kind == "file"}
         self.pending[p["id"]] = p
@@ -1711,9 +1774,20 @@ class Manager:
                 run_when_done(action)
         self._was_active = active
 
+    def close_windows(self):
+        GUI.stopped = True
+        n, self.notifier = self.notifier, None
+        if n:
+            n.destroy_now()
+        if self.info_ui:
+            try:
+                self.info_ui.destroy_all()
+            except Exception:
+                pass
+
     def _notify(self, event, d):
         trace(f"notify {event}: notifier={'yes' if self.notifier else 'no'}")
-        if self.notifier and self.cfg.get("notify", True):
+        if self.notifier and self.cfg.get("notify", True) and not getattr(self, "notifier_off", False):
             try:
                 self.notifier.show(event, self.row(d))
             except Exception:
@@ -1759,7 +1833,15 @@ class Manager:
         return True
 
     def pump(self):
-        """تُستدعى دورياً: روابط الإضافة + تنظيف الملغى."""
+        """تُستدعى دورياً: روابط الإضافة + تنظيف الملغى. إن كانت تعمل في خيط آخر نتجاوزها."""
+        if not self._pump_lock.acquire(blocking=False):
+            return 0
+        try:
+            return self._pump()
+        finally:
+            self._pump_lock.release()
+
+    def _pump(self):
         added = 0
         try:
             while True:
@@ -1792,9 +1874,19 @@ class Manager:
             "waiting": bool(getattr(d, "in_queue", False)) and d.status == "queued",
         }
 
+    def env(self):
+        """الأدوات وحالة بدء التشغيل: فحصها يقرأ القرص والسجل، فلا نكرره كل 600 مللي ثانية."""
+        t, val = self._env
+        if val is None or time.time() - t > 5:
+            val = ({"ytdlp": bool(find_ytdlp()), "ffmpeg": bool(find_ffmpeg()), "deno": bool(find_js_runtime())},
+                   startup_get())
+            self._env = (time.time(), val)
+        return val
+
     def snapshot(self):
         with self.lock:
             items = list(self.items)
+        tools, startup = self.env()
         rows = [self.row(d) for d in reversed(items)]
         notice, self.notice = self.notice, ""
         return {
@@ -1802,15 +1894,14 @@ class Manager:
             "items": rows,
             "speed": sum(r["speed"] for r in rows),
             "settings": {"folder": self.cfg["folder"], "conns": int(self.cfg.get("conns", 8)),
-                         "startup": startup_get(), "compat": bool(self.cfg.get("compat", True)),
+                         "startup": startup, "compat": bool(self.cfg.get("compat", True)),
                          "notify": bool(self.cfg.get("notify", True)),
                          "max_parallel": int(self.cfg.get("max_parallel", 3)),
                          "speed_limit": int(self.cfg.get("speed_limit", 0)),
                          "categories": bool(self.cfg.get("categories", True)),
                          "ask": bool(self.cfg.get("ask", True)),
                          "when_done": self.cfg.get("when_done", "none")},
-            "tools": {"ytdlp": bool(find_ytdlp()), "ffmpeg": bool(find_ffmpeg()),
-                      "deno": bool(find_js_runtime())},
+            "tools": tools,
         }
 
     def save(self):
@@ -1820,9 +1911,9 @@ class Manager:
         save_json(LIST_FILE, data)
 
     def shutdown(self):
-        if self.notifier:
-            self.notifier.close()
-            self.notifier = None
+        # لا نغلق النوافذ هنا: هذه تعمل داخل خيط الواجهة (حدث closing)، والإغلاق ينتظر ذلك الخيط نفسه.
+        # تُغلق النوافذ الثانوية في close_windows بعد إغلاق النافذة الرئيسية.
+        self.notifier_off = True
         with self.lock:
             items = list(self.items)
         for d in items:
@@ -1996,11 +2087,8 @@ def force_topmost(win, x=None, y=None):
     try:
         import ctypes
         u32 = ctypes.windll.user32
-        hwnd = 0
-        try:
-            hwnd = int(win.native.Handle.ToInt64())
-        except Exception:
-            hwnd = u32.FindWindowW(None, TOAST_TITLE)
+        # لا نلمس win.native من خارج خيط الواجهة (.NET): نبحث عن النافذة بعنوانها
+        hwnd = u32.FindWindowW(None, TOAST_TITLE)
         if not hwnd:
             return False
         SWP_NOSIZE, SWP_NOMOVE, SWP_NOACTIVATE, SWP_SHOWWINDOW = 0x1, 0x2, 0x10, 0x40
@@ -2053,8 +2141,7 @@ class Notifier:
 
     def __init__(self):
         self.win = None
-        self.timer = None
-        self.lock = threading.Lock()
+        self.gen = 0           # رقم آخر إشعار: مؤقت الإغلاق لا يغلق إشعاراً أحدث منه
         self.api = ToastApi(self)
         try:
             with open(resource("ui", "toast.html"), encoding="utf-8") as f:
@@ -2073,16 +2160,27 @@ class Notifier:
     def _raise(self, w):
         # نكرر الرفع قليلاً: بعض النوافذ (ملء الشاشة، المتصفح) تعود فوق الإشعار عند ظهوره
         for delay in (0, 0.3, 1.0):
-            t = threading.Timer(delay, lambda: self.win is w and force_topmost(w))
-            t.daemon = True
-            t.start()
+            GUI.later(delay, lambda: self.win is w and force_topmost(w))
 
     def close(self):
-        with self.lock:
-            w, self.win = self.win, None
-            if self.timer:
-                self.timer.cancel()
-                self.timer = None
+        """من أي خيط: الإغلاق الفعلي في خيط النوافذ."""
+        GUI.call(self._close)
+
+    def _close(self, gen=None):
+        if gen is not None and gen != self.gen:
+            return                       # جاء إشعار أحدث: مؤقت القديم لا يغلقه
+        w, self.win = self.win, None
+        if w is None:
+            return
+        wait_shown(w)
+        try:
+            w.destroy()
+        except Exception:
+            pass
+
+    def destroy_now(self):
+        """عند إغلاق البرنامج (من أي خيط عدا خيط الواجهة)."""
+        w, self.win = self.win, None
         if w is not None:
             try:
                 w.destroy()
@@ -2092,28 +2190,43 @@ class Notifier:
     def show(self, event, row):
         if not self.template:
             return
-        import webview
         data = {"event": event, "name": row["name"], "path": row.get("path") or "",
                 "error": row.get("error") or "", "size": row.get("total") or 0,
                 "source": row.get("source") or ""}
         html = self.template.replace("/*__DATA__*/null", json.dumps(data, ensure_ascii=False))
-        self.close()      # إشعار واحد في كل مرة: الجديد يحل محل القديم
-        x, y = self._pos()
-        trace(f"toast {event} at {x},{y}")
-        w = webview.create_window(
-            TOAST_TITLE, html=html, js_api=self.api, width=TOAST_W, height=TOAST_H, x=x, y=y,
-            resizable=False, frameless=True, on_top=True, focus=False, shadow=True,
-            background_color="#03154A")
-        trace("toast window created")
-        try:
-            w.events.shown += lambda: (trace("toast shown"), self._raise(w))
-        except Exception:
-            log_error("toast events")
-        with self.lock:
+        GUI.call(self._show, event, html)
+
+    def _show(self, event, html):
+        import webview
+        self.gen += 1
+        gen = self.gen
+        w = self.win
+        if w is not None:
+            # إشعار واحد في كل مرة: نغيّر محتوى النافذة الموجودة بدل هدمها وإنشاء أخرى
+            wait_shown(w)
+            try:
+                w.load_html(html)
+                trace(f"toast {event} reused")
+                self._raise(w)
+            except Exception:
+                log_error("toast reuse")
+                self._close()
+                w = None
+        if w is None:
+            x, y = self._pos()
+            trace(f"toast {event} at {x},{y}")
+            w = webview.create_window(
+                TOAST_TITLE, html=html, js_api=self.api, width=TOAST_W, height=TOAST_H, x=x, y=y,
+                resizable=False, frameless=True, on_top=True, focus=False, shadow=True,
+                background_color="#03154A")
             self.win = w
-            self.timer = threading.Timer(8 if event == "start" else 15, self.close)
-            self.timer.daemon = True
-            self.timer.start()
+            trace("toast window created")
+            try:
+                w.events.shown += lambda: (trace("toast shown"), self._raise(w))
+                w.events.closed += lambda: setattr(self, "win", None) if self.win is w else None
+            except Exception:
+                log_error("toast events")
+        GUI.later(8 if event == "start" else 15, self._close, gen)
 
 
 INFO_TITLE = "PyDM - معلومات الملف"
@@ -2128,10 +2241,7 @@ def bring_to_front(win, title):
     try:
         import ctypes
         u32 = ctypes.windll.user32
-        try:
-            hwnd = int(win.native.Handle.ToInt64())
-        except Exception:
-            hwnd = u32.FindWindowW(None, title)
+        hwnd = u32.FindWindowW(None, title)      # لا نلمس win.native من خارج خيط الواجهة
         if not hwnd:
             return False
         u32.ShowWindow(hwnd, 5)
@@ -2188,7 +2298,21 @@ class InfoDialogs:
             self.template = f.read()
 
     def open(self, p):
+        """من أي خيط: النافذة تُنشأ في خيط النوافذ، فلا ينتظر خيط الإضافة أو الواجهة."""
+        GUI.call(self._open_safe, p)
+
+    def _open_safe(self, p):
+        try:
+            self._open(p)
+        except Exception:
+            log_error("info dialog")
+            if self.mgr.pending.pop(p["id"], None) is not None:     # تحميل مباشر بدل النافذة
+                self.mgr.add(p["url"], p["headers"], p["meta"])
+
+    def _open(self, p):
         import webview
+        if p["id"] not in self.mgr.pending:
+            return
         data = {"id": p["id"], "url": p["url"], "kind": p["kind"], "name": p["name"], "ext": p["ext"],
                 "total": p["total"], "category": p["category"], "folder": p["folder"],
                 "probing": p["probing"], "categories": CATEGORY_LABELS}
@@ -2205,9 +2329,7 @@ class InfoDialogs:
 
         def shown():
             for delay in (0, 0.4):
-                t = threading.Timer(delay, lambda: bring_to_front(w, INFO_TITLE))
-                t.daemon = True
-                t.start()
+                GUI.later(delay, bring_to_front, w, INFO_TITLE)
 
         try:
             w.events.shown += shown
@@ -2216,10 +2338,22 @@ class InfoDialogs:
             pass
 
     def close(self, pid):
+        GUI.call(self._close, pid)
+
+    def _close(self, pid):
         w = self.windows.pop(pid, None)
         if w is not None:
+            wait_shown(w)
             try:
                 w.destroy()
+            except Exception:
+                pass
+
+    def destroy_all(self):
+        for pid in list(self.windows):
+            w = self.windows.pop(pid, None)
+            try:
+                w and w.destroy()
             except Exception:
                 pass
 
@@ -2316,16 +2450,23 @@ def main():
     mgr = Manager()
     trace(f"manager loaded {len(mgr.items)} items")
 
-    def autosave():
+    def background():
+        """روابط الإضافة والطابور كل نصف ثانية، والحفظ كل 3 ثوانٍ، بعيداً عن خيط الواجهة."""
+        last = 0
         while True:
-            time.sleep(3)
+            time.sleep(0.5)
             try:
                 mgr.pump()
-                mgr.save()
             except Exception:
-                log_error("autosave")
+                log_error("pump")
+            if time.time() - last >= 3:
+                last = time.time()
+                try:
+                    mgr.save()
+                except Exception:
+                    log_error("autosave")
 
-    threading.Thread(target=autosave, daemon=True).start()
+    threading.Thread(target=background, daemon=True).start()
     try:
         import webview
         trace(f"pywebview {getattr(webview, '__version__', '?')} imported")
@@ -2336,6 +2477,7 @@ def main():
             width=1080, height=660, min_size=(760, 480), background_color="#061233")
         UI["window"] = window
         window.events.closing += lambda: mgr.shutdown()
+        window.events.closed += lambda: mgr.close_windows()   # وإلا يبقى البرنامج يعمل بلا نافذة
 
         def start_notifier():
             mgr.notifier = Notifier()
